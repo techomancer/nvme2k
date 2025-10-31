@@ -434,6 +434,33 @@ BOOLEAN NvmeProcessIoCompletion(IN PHW_DEVICE_EXTENSION DevExt)
                 srbExt->PrpListPage = 0xFF;
             }
 
+            // Check if this was a TRIM operation that we need to restore buffer for
+            if (DevExt->TrimEnable && Srb->DataTransferLength >= 4096) {
+                PCDB cdb = (PCDB)Srb->Cdb;
+                BOOLEAN isWrite = FALSE;
+
+                // Check if this is a write operation
+                switch (cdb->CDB10.OperationCode) {
+                    case SCSIOP_WRITE6:
+                    case SCSIOP_WRITE:
+                        isWrite = TRUE;
+                        break;
+                }
+
+                // If write, check if bytes 16-4095 match TrimPattern (excluding first 16 bytes we corrupted)
+                if (isWrite && Srb->DataBuffer) {
+                    PUCHAR dataBuffer = (PUCHAR)Srb->DataBuffer;
+                    // Compare bytes 16-4095 with TrimPattern offset by 4 ULONGs (16 bytes)
+                    if (RtlCompareMemory(dataBuffer + 16, (PUCHAR)DevExt->TrimPattern + 16, 4096 - 16) == (4096 - 16)) {
+                        // This was a TRIM operation - restore the first 16 bytes from TrimPattern
+#ifdef NVME2K_DBG_EXTRA
+                        ScsiDebugPrint(0, "nvme2k: Restoring first 16 bytes of TRIM buffer\n");
+#endif
+                        RtlCopyMemory(dataBuffer, DevExt->TrimPattern, 16);
+                    }
+                }
+            }
+
             // Set SRB status based on NVMe status
             if (status == NVME_SC_SUCCESS) {
                 Srb->SrbStatus = SRB_STATUS_SUCCESS;

@@ -511,6 +511,75 @@ BOOLEAN NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUE
                        DevExt->RejectedRequests);
     }
 #endif
+
+    // Check for TRIM mode: if writing and TRIM is enabled, compare first 4KB with pattern
+    if (isWrite && DevExt->TrimEnable && Srb->DataTransferLength >= 4096) {
+        // Compare first 4KB of DataBuffer with TrimPattern
+        if (RtlCompareMemory(Srb->DataBuffer, DevExt->TrimPattern, 4096) == 4096) {
+            // Match! Convert to TRIM/UNMAP (Dataset Management) command
+#ifdef NVME2K_DBG_EXTRA
+            ScsiDebugPrint(0, "nvme2k: TRIM pattern detected at LBA %08X%08X, blocks=%u - converting to DSM\n",
+                           (ULONG)(lba >> 32), (ULONG)(lba & 0xFFFFFFFF), numBlocks);
+#endif
+            // Build Dataset Management command
+            Cmd->CDW0.Fields.Opcode = NVME_CMD_DSM;
+            // Flags and CommandId already set, NSID already set
+
+            // Clear reserved fields
+            Cmd->CDW2 = 0;
+            Cmd->CDW3 = 0;
+            Cmd->MPTR = 0;
+
+            // DSM command format:
+            // CDW10: NR (Number of Ranges) - 1 range = 0
+            // CDW11: Attributes - bit 2 (AD) = deallocate
+            // PRP points to range data: [Context Attributes (32bit)][Length in blocks (32bit)][Starting LBA (64bit)]
+            Cmd->CDW10 = 0;  // 0 = 1 range
+            Cmd->CDW11 = (1 << 2);  // AD (Attribute - Deallocate)
+            Cmd->CDW12 = 0;
+            Cmd->CDW13 = 0;
+            Cmd->CDW14 = 0;
+            Cmd->CDW15 = 0;
+
+            // Build range data structure in data buffer (reuse the buffer)
+            // Format: [Context Attributes: 32 bits][Length: 32 bits][SLBA: 64 bits]
+            {
+                PULONG rangeData = (PULONG)Srb->DataBuffer;
+                rangeData[0] = 0;  // Context attributes
+                rangeData[1] = numBlocks;  // Length in logical blocks
+                rangeData[2] = (ULONG)(lba & 0xFFFFFFFF);  // Starting LBA (low)
+                rangeData[3] = (ULONG)(lba >> 32);  // Starting LBA (high)
+#ifdef NVME2K_DBG_EXTRA
+                ScsiDebugPrint(0, "nvme2k: DSM range data - CtxAttr=0x%08X Len=%u SLBA=0x%08X%08X\n",
+                               rangeData[0], rangeData[1], rangeData[3], rangeData[2]);
+#endif
+            }
+
+            // Get physical address for the range data (only need 16 bytes)
+            length = 16;
+            physAddr = ScsiPortGetPhysicalAddress(DevExt, Srb, Srb->DataBuffer, &length);
+            Cmd->PRP1 = physAddr.QuadPart;
+            Cmd->PRP2 = 0;
+
+#ifdef NVME2K_DBG_EXTRA
+            ScsiDebugPrint(0, "nvme2k: DSM command - CDW10=0x%08X CDW11=0x%08X PRP1=0x%08X%08X\n",
+                           Cmd->CDW10, Cmd->CDW11,
+                           (ULONG)(Cmd->PRP1 >> 32), (ULONG)(Cmd->PRP1 & 0xFFFFFFFF));
+#endif
+
+            return TRUE;
+        }
+    }
+
+    // Normal read/write: Set LBA and number of blocks
+    Cmd->CDW10 = (ULONG)(lba & 0xFFFFFFFF);
+    Cmd->CDW11 = (ULONG)(lba >> 32);
+    Cmd->CDW12 = (numBlocks > 0) ? (numBlocks - 1) : 0;
+    Cmd->CDW13 = 0;
+    Cmd->CDW14 = 0;
+    Cmd->CDW15 = 0;
+
+    // Normal read/write path - build PRPs
     // Get physical address of data buffer
     length = Srb->DataTransferLength;
     physAddr = ScsiPortGetPhysicalAddress(DevExt, Srb, Srb->DataBuffer, &length);
@@ -601,13 +670,7 @@ BOOLEAN NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUE
         Cmd->PRP2 = prpListPhys.QuadPart;
     }
 
-    // Set LBA and number of blocks (0-based, so subtract 1)
-    Cmd->CDW10 = (ULONG)(lba & 0xFFFFFFFF);
-    Cmd->CDW11 = (ULONG)(lba >> 32);
-    Cmd->CDW12 = (numBlocks > 0) ? (numBlocks - 1) : 0;
-    Cmd->CDW13 = 0;
-    Cmd->CDW14 = 0;
-    Cmd->CDW15 = 0;
+    // CDW10-15 already set above before TRIM check
     return TRUE;
 }
 

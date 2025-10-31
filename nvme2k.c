@@ -1024,8 +1024,14 @@ BOOLEAN HwStartIo(IN PVOID DeviceExtension, IN PSCSI_REQUEST_BLOCK Srb)
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: HwStartIo - SRB_FUNCTION_IO_CONTROL\n");
 #endif
+            // Handle NVME2KDB custom IOCTLs first
+            if (HandleIO_NVME2KDB(DevExt, Srb)) {
+                if (Srb->SrbStatus != SRB_STATUS_PENDING) {
+                    Srb->SrbStatus = SRB_STATUS_SUCCESS;
+                }
+            }
             // Handle SMART and other miniport IOCTLs
-            if (HandleIO_SCSIDISK(DevExt, Srb)) {
+            else if (HandleIO_SCSIDISK(DevExt, Srb)) {
                 // If HandleIO_SCSIDISK returns TRUE, it may have set the status
                 // to PENDING for async operations.
                 if (Srb->SrbStatus != SRB_STATUS_PENDING) {

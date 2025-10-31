@@ -957,6 +957,108 @@ BOOLEAN ScsiHandleModeSense(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLO
 }
 
 //
+// HandleIO_NVME2KDB - Process NVME2KDB custom IOCTLs
+//
+BOOLEAN HandleIO_NVME2KDB(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb)
+{
+    PSRB_IO_CONTROL srbControl;
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: HandleIO_NVME2KDB called - DataTransferLength=%u\n",
+                   Srb->DataTransferLength);
+#endif
+
+    // Validate minimum size for SRB_IO_CONTROL header
+    if (Srb->DataTransferLength < sizeof(SRB_IO_CONTROL)) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: HandleIO_NVME2KDB invalid transfer length - DataTransferLength=%u\n",
+                       Srb->DataTransferLength);
+#endif
+        return FALSE;
+    }
+
+    srbControl = (PSRB_IO_CONTROL)Srb->DataBuffer;
+
+    // Check signature
+    if (RtlCompareMemory(srbControl->Signature, "NVME2KDB", 8) != 8) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: Invalid NVME2KDB signature\n");
+#endif
+        return FALSE;
+    }
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NVME2KDB IOCTL ControlCode=0x%08X Length=%u\n",
+                   srbControl->ControlCode, srbControl->Length);
+#endif
+
+    switch (srbControl->ControlCode) {
+        case 0x1000:  // NVME2KDB_IOCTL_QUERY_INFO
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: NVME2KDB QUERY_INFO\n");
+#endif
+            srbControl->ReturnCode = 0;  // Success
+            Srb->SrbStatus = SRB_STATUS_SUCCESS;
+            return TRUE;
+
+        case 0x1001:  // NVME2KDB_IOCTL_TRIM_MODE_ON
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: NVME2KDB TRIM_MODE_ON (Length=%u)\n", srbControl->Length);
+#endif
+            // Validate that we have the 4KB pattern buffer
+            if (srbControl->Length != 4096 ||
+                Srb->DataTransferLength < sizeof(SRB_IO_CONTROL) + 4096) {
+#ifdef NVME2K_DBG
+                ScsiDebugPrint(0, "nvme2k: NVME2KDB TRIM_MODE_ON invalid length (expected 4096, got %u)\n",
+                               srbControl->Length);
+#endif
+                srbControl->ReturnCode = 1;  // Error
+                Srb->SrbStatus = SRB_STATUS_ERROR;
+                return FALSE;
+            }
+
+            // Copy the 4KB pattern to device extension
+            RtlCopyMemory(
+                DevExt->TrimPattern,
+                (PUCHAR)Srb->DataBuffer + sizeof(SRB_IO_CONTROL),
+                4096
+            );
+
+            // Enable TRIM mode
+            DevExt->TrimEnable = TRUE;
+
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: NVME2KDB TRIM mode enabled, pattern stored\n");
+#endif
+            Srb->SrbStatus = SRB_STATUS_SUCCESS;
+            srbControl->ReturnCode = 0;  // Success
+            return TRUE;
+
+        case 0x1002:  // NVME2KDB_IOCTL_TRIM_MODE_OFF
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: NVME2KDB TRIM_MODE_OFF\n");
+#endif
+            // Disable TRIM mode
+            DevExt->TrimEnable = FALSE;
+
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: NVME2KDB TRIM mode disabled\n");
+#endif
+            Srb->SrbStatus = SRB_STATUS_SUCCESS;
+            srbControl->ReturnCode = 0;  // Success
+            return TRUE;
+
+        default:
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: NVME2KDB unknown ControlCode: 0x%08X\n", srbControl->ControlCode);
+#endif
+            srbControl->ReturnCode = 1;  // Error
+            // Don't set SRB status - let caller set SRB_STATUS_INVALID_REQUEST
+            return FALSE;
+    }
+}
+
+//
 // HandleIO_SCSIDISK - Process SMART/ATA pass-through IOCTLs
 //
 // for now we dont really support any SCSIDISK IOCTLS so all return FALSE

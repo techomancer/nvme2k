@@ -7,7 +7,7 @@ Signature="$Windows NT$"
 Class=SCSIAdapter
 ClassGUID={4D36E97B-E325-11CE-BFC1-08002BE10318}
 Provider=%ProviderString%
-DriverVer=10/10/2025,1.0.0.1
+DriverVer=10/31/2025,1.0.0.2
 
 [DestinationDirs]
 DefaultDestDir = 12  ; DIRID_DRIVERS
