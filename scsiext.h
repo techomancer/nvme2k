@@ -48,6 +48,25 @@
 #define IOCTL_IDE_PASS_THROUGH          CTL_CODE(IOCTL_SCSI_BASE, 0x040a, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
 #endif
 
+#ifndef IOCTL_SCSI_MINIPORT_SMART_VERSION
+ 
+#define _FILE_DEVICE_SCSI 0x001B0000
+
+#define IOCTL_SCSI_MINIPORT_SMART_VERSION               (_FILE_DEVICE_SCSI | 0x0500)
+#define IOCTL_SCSI_MINIPORT_IDENTIFY                    (_FILE_DEVICE_SCSI | 0x0501)
+#define IOCTL_SCSI_MINIPORT_READ_SMART_ATTRIBS          (_FILE_DEVICE_SCSI | 0x0502)
+#define IOCTL_SCSI_MINIPORT_READ_SMART_THRESHOLDS       (_FILE_DEVICE_SCSI | 0x0503)
+#define IOCTL_SCSI_MINIPORT_ENABLE_SMART                (_FILE_DEVICE_SCSI | 0x0504)
+#define IOCTL_SCSI_MINIPORT_DISABLE_SMART               (_FILE_DEVICE_SCSI | 0x0505)
+#define IOCTL_SCSI_MINIPORT_RETURN_STATUS               (_FILE_DEVICE_SCSI | 0x0506)
+#define IOCTL_SCSI_MINIPORT_ENABLE_DISABLE_AUTOSAVE     (_FILE_DEVICE_SCSI | 0x0507)
+#define IOCTL_SCSI_MINIPORT_SAVE_ATTRIBUTE_VALUES       (_FILE_DEVICE_SCSI | 0x0508)
+#define IOCTL_SCSI_MINIPORT_EXECUTE_OFFLINE_DIAGS       (_FILE_DEVICE_SCSI | 0x0509)
+#define IOCTL_SCSI_MINIPORT_ENABLE_DISABLE_AUTO_OFFLINE (_FILE_DEVICE_SCSI | 0x050A)
+#define IOCTL_SCSI_MINIPORT_READ_SMART_LOG              (_FILE_DEVICE_SCSI | 0x050B)
+#define IOCTL_SCSI_MINIPORT_WRITE_SMART_LOG             (_FILE_DEVICE_SCSI | 0x050C)
+#endif
+
 //
 // READ DEFECT DATA (10) CDB structure
 // Per SBC-3 section 5.7
@@ -145,6 +164,26 @@ typedef struct _UNMAP_BLOCK_DESCRIPTOR {
 // (normally defined in ntdddisk.h/winioctl.h)
 //
 
+#ifndef CAP_ATA_ID_CMD
+// these are not there on nt4?
+typedef struct _GETVERSIONINPARAMS {
+        UCHAR    bVersion;               // Binary driver version.
+        UCHAR    bRevision;              // Binary driver revision.
+        UCHAR    bReserved;              // Not used.
+        UCHAR    bIDEDeviceMap;          // Bit map of IDE devices.
+        ULONG   fCapabilities;          // Bit mask of driver capabilities.
+        ULONG   dwReserved[4];          // For future use.
+} GETVERSIONINPARAMS, *PGETVERSIONINPARAMS, *LPGETVERSIONINPARAMS;
+
+//
+// Bits returned in the fCapabilities member of GETVERSIONINPARAMS
+//
+
+#define CAP_ATA_ID_CMD          1       // ATA ID command supported
+#define CAP_ATAPI_ID_CMD        2       // ATAPI ID command supported
+#define CAP_SMART_CMD           4       // SMART commannds supported
+
+
 // ATA/IDE register structure
 typedef struct _IDEREGS {
     UCHAR bFeaturesReg;       // Feature register (SMART subcommand)
@@ -184,6 +223,7 @@ typedef struct _SENDCMDOUTPARAMS {
     DRIVERSTATUS DriverStatus;    // Driver status
     UCHAR bBuffer[1];             // Variable length buffer (512 bytes for SMART data)
 } SENDCMDOUTPARAMS, *PSENDCMDOUTPARAMS, *LPSENDCMDOUTPARAMS;
+#endif /* CAP_ATA_ID_CMD */
 
 // NVMe SMART/Health Information Log (Log Page 0x02)
 // Note: This structure matches the NVMe spec byte layout exactly

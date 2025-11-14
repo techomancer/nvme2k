@@ -468,6 +468,16 @@ BOOLEAN NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUE
             break;
     }
 
+    // Validate transfer size against MDTS
+    if (Srb->DataTransferLength > DevExt->MaxTransferSizeBytes) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: Transfer size %u exceeds MDTS limit %u - rejecting\n",
+                       Srb->DataTransferLength, DevExt->MaxTransferSizeBytes);
+#endif
+        DevExt->RejectedRequests++;
+        return FALSE;
+    }
+
     // Build NVMe command
     if (isWrite) {
         Cmd->CDW0.Fields.Opcode = NVME_CMD_WRITE;

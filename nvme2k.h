@@ -10,11 +10,12 @@
 #include <scsi.h>
 #include <devioctl.h>
 #include <ntddscsi.h>
+#include <ntdddisk.h>
 #include "atomic.h"
 #include "nvme.h"
 #include "scsiext.h"
 
-#define NVME2K_DBG
+//#define NVME2K_DBG
 // extra spammy logging for NVMe commands
 //#define NVME2K_DBG_CMD
 //#define NVME2K_DBG_EXTRA
@@ -228,24 +229,27 @@ typedef struct _HW_DEVICE_EXTENSION {
     UCHAR ControllerModelNumber[41];                // Offset 0x12D (301)
     UCHAR ControllerFirmwareRevision[9];            // Offset 0x156 (342)
     BOOLEAN SMARTEnabled;                           // Offset 0x15F (351)
+    UCHAR MaxDataTransferSizePower;                 // Offset 0x160 (352) - MDTS from controller (power of 2)
+    UCHAR Reserved5_1[3];                           // Offset 0x161 (353) - alignment
+    ULONG MaxTransferSizeBytes;                     // Offset 0x164 (356) - Computed max transfer in bytes
 
     // Namespace information
-    ULONGLONG NamespaceSizeInBlocks;                // Offset 0x160 (352) [8-byte aligned]
-    ULONG NamespaceBlockSize;                       // Offset 0x168 (360)
-    ULONG UncachedExtensionOffset;                  // Offset 0x16C (364)
+    ULONGLONG NamespaceSizeInBlocks;                // Offset 0x168 (360) [8-byte aligned]
+    ULONG NamespaceBlockSize;                       // Offset 0x170 (368)
+    ULONG UncachedExtensionOffset;                  // Offset 0x174 (372)
 
     // Uncached memory allocation
-    PHYSICAL_ADDRESS UncachedExtensionPhys;         // Offset 0x170 (368) [8-byte aligned]
-    PVOID UncachedExtensionBase;                    // Offset 0x178 (376)
-    ULONG UncachedExtensionSize;                    // Offset 0x17C (380)
-    ULONG FallbackTimerNeeded;                      // Offset 0x180 (384)
+    PHYSICAL_ADDRESS UncachedExtensionPhys;         // Offset 0x178 (376) [8-byte aligned]
+    PVOID UncachedExtensionBase;                    // Offset 0x180 (384)
+    ULONG UncachedExtensionSize;                    // Offset 0x184 (388)
+    ULONG FallbackTimerNeeded;                      // Offset 0x188 (392)
 
     // TRIM mode support
-    BOOLEAN TrimEnable;                             // Offset 0x184 (388)
-    UCHAR Reserved5[3];                             // Offset 0x185 (389) - 3 byte alignment
-    ULONG TrimPattern[1024];                        // Offset 0x188 (392) - 4KB pattern buffer [4-byte aligned]
+    BOOLEAN TrimEnable;                             // Offset 0x18C (396)
+    UCHAR Reserved5[3];                             // Offset 0x18D (397) - 3 byte alignment
+    ULONG TrimPattern[1024];                        // Offset 0x190 (400) - 4KB pattern buffer [4-byte aligned]
 
-} HW_DEVICE_EXTENSION, *PHW_DEVICE_EXTENSION;       // Total size: 0x1188 (4488) bytes
+} HW_DEVICE_EXTENSION, *PHW_DEVICE_EXTENSION;       // Total size: 0x1190 (4496) bytes
 
 //
 // Forward declarations of miniport entry points
@@ -321,6 +325,13 @@ BOOLEAN ScsiPending(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb);
 //
 BOOLEAN HandleIO_NVME2KDB(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb);
 BOOLEAN HandleIO_SCSIDISK(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb);
+
+// SMART IOCTL handler functions
+BOOLEAN HandleSmartGetVersion(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb, IN PSRB_IO_CONTROL srbControl);
+BOOLEAN HandleSmartIdentify(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb, IN PSRB_IO_CONTROL srbControl);
+BOOLEAN HandleSmartReadAttribs(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb, IN PSRB_IO_CONTROL srbControl);
+BOOLEAN HandleSmartEnableDisable(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb, IN PSRB_IO_CONTROL srbControl, IN BOOLEAN Enable);
+BOOLEAN HandleSmartReturnStatus(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb, IN PSRB_IO_CONTROL srbControl);
 BOOLEAN ScsiHandleInquiry(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb);
 BOOLEAN ScsiHandleReadCapacity(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb);
 BOOLEAN ScsiHandleReadWrite(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb);

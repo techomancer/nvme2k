@@ -61,8 +61,198 @@ BOOLEAN ScsiHandleInquiry(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
     // Check for EVPD (Enable Vital Product Data)
     // In CDB6INQUIRY, bit 0 of PageCode field is EVPD
     if (cdb->CDB6INQUIRY.PageCode & 0x01) {
-        // Return error for VPD pages (not implemented)
-        return ScsiError(DevExt, Srb, SRB_STATUS_INVALID_REQUEST);
+        // VPD page requested
+        UCHAR pageCode = cdb->CDB6INQUIRY.PageCode & 0xFE; // Mask off EVPD bit
+
+        if (pageCode == 0x00) {
+            // VPD page 0x00: Supported VPD Pages
+            if (Srb->DataTransferLength < 6) {
+                return ScsiError(DevExt, Srb, SRB_STATUS_DATA_OVERRUN);
+            }
+
+            inquiryData[0] = 0x00;  // Peripheral Device Type: Direct access
+            inquiryData[1] = 0x00;  // Page Code 0x00
+            inquiryData[2] = 0x00;  // Reserved
+            inquiryData[3] = 0x04;  // Page Length (4 pages supported)
+            inquiryData[4] = 0x00;  // Supported page: 0x00 (this page)
+            inquiryData[5] = 0x80;  // Supported page: 0x80 (Unit Serial Number)
+            inquiryData[6] = 0xB0;  // Supported page: 0xB0 (Block Limits)
+            inquiryData[7] = 0xB1;  // Supported page: 0xB1 (Block Device Characteristics)
+
+            Srb->DataTransferLength = 8;
+            return ScsiSuccess(DevExt, Srb);
+        } else if (pageCode == 0x80) {
+            // VPD page 0x80: Unit Serial Number (SPC-3)
+            UCHAR serialLength = 20;  // NVMe serial numbers are 20 bytes
+            ULONG pageLength = 4 + serialLength;  // Header (4 bytes) + serial number
+
+            if (Srb->DataTransferLength < pageLength) {
+                return ScsiError(DevExt, Srb, SRB_STATUS_DATA_OVERRUN);
+            }
+
+            inquiryData[0] = 0x00;  // Peripheral Device Type: Direct access
+            inquiryData[1] = 0x80;  // Page Code: Unit Serial Number
+            inquiryData[2] = 0x00;  // Reserved
+            inquiryData[3] = serialLength;  // Page Length (20 bytes)
+
+            // Copy serial number from controller (trim trailing spaces)
+            RtlCopyMemory(&inquiryData[4], DevExt->ControllerSerialNumber, serialLength);
+
+            Srb->DataTransferLength = pageLength;
+            return ScsiSuccess(DevExt, Srb);
+        } else if (pageCode == 0xB0) {
+            // VPD page 0xB0: Block Limits (SBC-3)
+            ULONG maxTransferBlocks;
+
+            if (Srb->DataTransferLength < 64) {
+                return ScsiError(DevExt, Srb, SRB_STATUS_DATA_OVERRUN);
+            }
+
+            // Calculate maximum transfer length in blocks
+            if (DevExt->NamespaceBlockSize > 0) {
+                maxTransferBlocks = DevExt->MaxTransferSizeBytes / DevExt->NamespaceBlockSize;
+            } else {
+                maxTransferBlocks = DevExt->MaxTransferSizeBytes / 512;  // Assume 512 if not initialized
+            }
+
+            inquiryData[0] = 0x00;  // Peripheral Device Type: Direct access
+            inquiryData[1] = 0xB0;  // Page Code: Block Limits
+            inquiryData[2] = 0x00;  // Page Length (MSB)
+            inquiryData[3] = 0x3C;  // Page Length (LSB) - 60 bytes
+
+            // Byte 4: WSNZ (Write Same No Zero) - 0
+            inquiryData[4] = 0x00;
+
+            // Byte 5: Maximum Compare and Write Length - 0 (not supported)
+            inquiryData[5] = 0x00;
+
+            // Bytes 6-7: Optimal Transfer Length Granularity - 0
+            inquiryData[6] = 0x00;
+            inquiryData[7] = 0x00;
+
+            // Bytes 8-11: Maximum Transfer Length (in blocks)
+            inquiryData[8] = (UCHAR)((maxTransferBlocks >> 24) & 0xFF);
+            inquiryData[9] = (UCHAR)((maxTransferBlocks >> 16) & 0xFF);
+            inquiryData[10] = (UCHAR)((maxTransferBlocks >> 8) & 0xFF);
+            inquiryData[11] = (UCHAR)(maxTransferBlocks & 0xFF);
+
+            // Bytes 12-15: Optimal Transfer Length - same as maximum
+            inquiryData[12] = inquiryData[8];
+            inquiryData[13] = inquiryData[9];
+            inquiryData[14] = inquiryData[10];
+            inquiryData[15] = inquiryData[11];
+
+            // Bytes 16-19: Maximum Prefetch/XDRead/XDWrite Transfer Length - 0
+            inquiryData[16] = 0x00;
+            inquiryData[17] = 0x00;
+            inquiryData[18] = 0x00;
+            inquiryData[19] = 0x00;
+
+            // Bytes 20-23: Maximum Unmap LBA Count - 0xFFFFFFFF (no limit)
+            inquiryData[20] = 0xFF;
+            inquiryData[21] = 0xFF;
+            inquiryData[22] = 0xFF;
+            inquiryData[23] = 0xFF;
+
+            // Bytes 24-27: Maximum Unmap Block Descriptor Count - 1
+            inquiryData[24] = 0x00;
+            inquiryData[25] = 0x00;
+            inquiryData[26] = 0x00;
+            inquiryData[27] = 0x01;
+
+            // Bytes 28-31: Optimal Unmap Granularity - 1
+            inquiryData[28] = 0x00;
+            inquiryData[29] = 0x00;
+            inquiryData[30] = 0x00;
+            inquiryData[31] = 0x01;
+
+            // Bytes 32-35: Unmap Granularity Alignment - 0
+            inquiryData[32] = 0x00;
+            inquiryData[33] = 0x00;
+            inquiryData[34] = 0x00;
+            inquiryData[35] = 0x00;
+
+            // Bytes 36-43: Maximum Write Same Length - 0 (not supported)
+            inquiryData[36] = 0x00;
+            inquiryData[37] = 0x00;
+            inquiryData[38] = 0x00;
+            inquiryData[39] = 0x00;
+            inquiryData[40] = 0x00;
+            inquiryData[41] = 0x00;
+            inquiryData[42] = 0x00;
+            inquiryData[43] = 0x00;
+
+            // Bytes 44-47: Maximum Atomic Transfer Length - 0
+            inquiryData[44] = 0x00;
+            inquiryData[45] = 0x00;
+            inquiryData[46] = 0x00;
+            inquiryData[47] = 0x00;
+
+            // Bytes 48-51: Atomic Alignment - 0
+            inquiryData[48] = 0x00;
+            inquiryData[49] = 0x00;
+            inquiryData[50] = 0x00;
+            inquiryData[51] = 0x00;
+
+            // Bytes 52-55: Atomic Transfer Length Granularity - 0
+            inquiryData[52] = 0x00;
+            inquiryData[53] = 0x00;
+            inquiryData[54] = 0x00;
+            inquiryData[55] = 0x00;
+
+            // Bytes 56-59: Maximum Atomic Transfer Length With Atomic Boundary - 0
+            inquiryData[56] = 0x00;
+            inquiryData[57] = 0x00;
+            inquiryData[58] = 0x00;
+            inquiryData[59] = 0x00;
+
+            // Bytes 60-63: Maximum Atomic Boundary Size - 0
+            inquiryData[60] = 0x00;
+            inquiryData[61] = 0x00;
+            inquiryData[62] = 0x00;
+            inquiryData[63] = 0x00;
+
+            Srb->DataTransferLength = 64;
+            return ScsiSuccess(DevExt, Srb);
+        } else if (pageCode == 0xB1) {
+            // VPD page 0xB1: Block Device Characteristics (SBC-3)
+            if (Srb->DataTransferLength < 64) {
+                return ScsiError(DevExt, Srb, SRB_STATUS_DATA_OVERRUN);
+            }
+
+            inquiryData[0] = 0x00;  // Peripheral Device Type: Direct access
+            inquiryData[1] = 0xB1;  // Page Code: Block Device Characteristics
+            inquiryData[2] = 0x00;  // Page Length (MSB)
+            inquiryData[3] = 0x3C;  // Page Length (LSB) - 60 bytes
+
+            // Bytes 4-5: Medium rotation rate (big-endian)
+            // 0x0001 = Non-rotating medium (SSD)
+            inquiryData[4] = 0x00;
+            inquiryData[5] = 0x01;
+
+            // Byte 6: Product type (0 = not indicated)
+            inquiryData[6] = 0x00;
+
+            // Byte 7: WABEREQ, WACEREQ, Nominal form factor, VBULS
+            // Bits 7-6: WABEREQ (Write After Block Erase Required) = 00b (not required)
+            // Bits 5-4: WACEREQ (Write After Cryptographic Erase Required) = 00b (not required)
+            // Bits 3-0: Nominal form factor = Ch (M.2 22110)
+            inquiryData[7] = 0x0C;
+
+            // Bytes 8-9: DEPOPULATION TIME (big-endian, in seconds)
+            // 0 = not reported
+            inquiryData[8] = 0x00;
+            inquiryData[9] = 0x00;
+
+            // Bytes 10-63: Reserved
+            RtlZeroMemory(&inquiryData[10], 54);
+
+            Srb->DataTransferLength = 64;
+            return ScsiSuccess(DevExt, Srb);
+        } else {
+            // Unsupported VPD page
+            return ScsiError(DevExt, Srb, SRB_STATUS_INVALID_REQUEST);
+        }
     }
 
     // Standard INQUIRY data
@@ -1059,10 +1249,202 @@ BOOLEAN HandleIO_NVME2KDB(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
 }
 
 //
+// SMART IOCTL Handler Functions
+//
+
+BOOLEAN HandleSmartGetVersion(
+    IN PHW_DEVICE_EXTENSION DevExt,
+    IN PSCSI_REQUEST_BLOCK Srb,
+    IN PSRB_IO_CONTROL srbControl)
+{
+    PGETVERSIONINPARAMS versionParams;
+    ULONG requiredSize = sizeof(SRB_IO_CONTROL) + sizeof(GETVERSIONINPARAMS);
+
+    if (Srb->DataTransferLength < requiredSize) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: SMART_VERSION buffer too small (%u < %u)\n",
+                       Srb->DataTransferLength, requiredSize);
+#endif
+        return FALSE;
+    }
+
+    versionParams = (PGETVERSIONINPARAMS)((PUCHAR)Srb->DataBuffer + sizeof(SRB_IO_CONTROL));
+    RtlZeroMemory(versionParams, sizeof(GETVERSIONINPARAMS));
+
+    // Fill in version information
+    versionParams->bVersion = 1;      // Driver version 1.x
+    versionParams->bRevision = 0;     // Revision 0
+    versionParams->bReserved = 0;
+
+    // For NVMe, we emulate a single IDE device on primary controller
+    // Bit 0 = device 0 on primary controller
+    versionParams->bIDEDeviceMap = 0x01;
+
+    // We support ATA ID and SMART commands via emulation
+    versionParams->fCapabilities = CAP_ATA_ID_CMD | CAP_SMART_CMD;
+
+    // Success
+    Srb->DataTransferLength = sizeof(SRB_IO_CONTROL) + sizeof(GETVERSIONINPARAMS);
+    srbControl->ReturnCode = 0;
+    Srb->SrbStatus = SRB_STATUS_SUCCESS;
+    return TRUE;
+}
+
+BOOLEAN HandleSmartIdentify(
+    IN PHW_DEVICE_EXTENSION DevExt,
+    IN PSCSI_REQUEST_BLOCK Srb,
+    IN PSRB_IO_CONTROL srbControl)
+{
+    PSENDCMDINPARAMS sendCmdIn;
+    PSENDCMDOUTPARAMS sendCmdOut;
+    ULONG requiredSize;
+    ULONG dataBufferSize;
+
+    // Validate buffer size for SENDCMDINPARAMS input
+    requiredSize = sizeof(SRB_IO_CONTROL) + sizeof(SENDCMDINPARAMS) - 1;
+    if (Srb->DataTransferLength < requiredSize) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: IDENTIFY buffer too small for input (%u < %u)\n",
+                       Srb->DataTransferLength, requiredSize);
+#endif
+        return FALSE;
+    }
+
+    // Validate buffer size for IDENTIFY output (512 bytes)
+    dataBufferSize = sizeof(SRB_IO_CONTROL) + sizeof(SENDCMDOUTPARAMS) + 512 - 1;
+    if (Srb->DataTransferLength < dataBufferSize) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: IDENTIFY buffer too small for output (%u < %u)\n",
+                       Srb->DataTransferLength, dataBufferSize);
+#endif
+        return FALSE;
+    }
+
+    sendCmdIn = (PSENDCMDINPARAMS)((PUCHAR)Srb->DataBuffer + sizeof(SRB_IO_CONTROL));
+    sendCmdOut = (PSENDCMDOUTPARAMS)((PUCHAR)Srb->DataBuffer + sizeof(SRB_IO_CONTROL));
+
+    // Generate ATA IDENTIFY data from NVMe controller/namespace info
+    NvmeToAtaIdentify(DevExt, (PATA_IDENTIFY_DEVICE_STRUCT)sendCmdOut->bBuffer);
+
+    // Set driver status
+    RtlZeroMemory(&sendCmdOut->DriverStatus, sizeof(DRIVERSTATUS));
+    sendCmdOut->DriverStatus.bDriverError = 0;
+    sendCmdOut->DriverStatus.bIDEError = 0;
+    sendCmdOut->cBufferSize = 512;
+
+    // Success
+    Srb->DataTransferLength = sizeof(SRB_IO_CONTROL) + sizeof(SENDCMDOUTPARAMS) + 512 - 1;
+    srbControl->ReturnCode = 0;
+    Srb->SrbStatus = SRB_STATUS_SUCCESS;
+    return TRUE;
+}
+
+BOOLEAN HandleSmartReadAttribs(
+    IN PHW_DEVICE_EXTENSION DevExt,
+    IN PSCSI_REQUEST_BLOCK Srb,
+    IN PSRB_IO_CONTROL srbControl)
+{
+    ULONG requiredSize;
+    ULONG dataBufferSize;
+
+    // Validate buffer size for SENDCMDINPARAMS input
+    requiredSize = sizeof(SRB_IO_CONTROL) + sizeof(SENDCMDINPARAMS) - 1;
+    if (Srb->DataTransferLength < requiredSize) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: READ_SMART_ATTRIBS buffer too small for input (%u < %u)\n",
+                       Srb->DataTransferLength, requiredSize);
+#endif
+        return FALSE;    
+    }
+
+    // Validate buffer size for SMART output (512 bytes)
+    dataBufferSize = sizeof(SRB_IO_CONTROL) + sizeof(SENDCMDOUTPARAMS) + 512 - 1;
+    if (Srb->DataTransferLength < dataBufferSize) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: READ_SMART_ATTRIBS buffer too small for output (%u < %u)\n",
+                       Srb->DataTransferLength, dataBufferSize);
+#endif
+        return FALSE;
+    }
+
+    // Issue async NVMe Get Log Page command for SMART/Health info
+    // The completion handler will convert NVMe SMART to ATA SMART format
+    if (!NvmeGetLogPage(DevExt, Srb, NVME_LOG_PAGE_SMART_HEALTH)) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: Failed to submit Get Log Page for SMART attributes\n");
+#endif
+        return FALSE;
+    }
+
+    // Mark SRB as pending - will be completed in interrupt handler
+    Srb->SrbStatus = SRB_STATUS_PENDING;
+    ScsiPortNotification(NextRequest, DevExt, NULL);
+    return TRUE;
+}
+
+BOOLEAN HandleSmartEnableDisable(
+    IN PHW_DEVICE_EXTENSION DevExt,
+    IN PSCSI_REQUEST_BLOCK Srb,
+    IN PSRB_IO_CONTROL srbControl,
+    IN BOOLEAN Enable)
+{
+    // Enable or disable SMART monitoring
+    DevExt->SMARTEnabled = Enable;
+    Srb->DataTransferLength = sizeof(SRB_IO_CONTROL);
+    srbControl->ReturnCode = 0;
+    Srb->SrbStatus = SRB_STATUS_SUCCESS;
+    return TRUE;
+}
+
+BOOLEAN HandleSmartReturnStatus(
+    IN PHW_DEVICE_EXTENSION DevExt,
+    IN PSCSI_REQUEST_BLOCK Srb,
+    IN PSRB_IO_CONTROL srbControl)
+{
+    PSENDCMDOUTPARAMS sendCmdOut;
+    ULONG requiredSize;
+
+    // Validate buffer size - only need SENDCMDOUTPARAMS for output (no data buffer needed)
+    requiredSize = sizeof(SRB_IO_CONTROL) + sizeof(SENDCMDOUTPARAMS) - 1;
+    if (Srb->DataTransferLength < requiredSize) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: RETURN_STATUS buffer too small (%u < %u)\n",
+                       Srb->DataTransferLength, requiredSize);
+#endif
+        return FALSE;
+    }
+
+    sendCmdOut = (PSENDCMDOUTPARAMS)((PUCHAR)Srb->DataBuffer + sizeof(SRB_IO_CONTROL));
+
+    // Initialize output - no data returned, only status
+    RtlZeroMemory(sendCmdOut, sizeof(SENDCMDOUTPARAMS));
+    sendCmdOut->cBufferSize = 0;
+    sendCmdOut->DriverStatus.bDriverError = 0;
+    sendCmdOut->DriverStatus.bIDEError = 0;
+
+    // Return SMART status in bReserved bytes (used as output registers)
+    // For NVMe, we return PASSING status
+    // PASSING: CylLow=0x4F, CylHigh=0xC2
+    // FAILING: CylLow=0xF4, CylHigh=0x2C
+    //
+    // Ideally we'd check NVMe CriticalWarning field, but that requires
+    // async Get Log Page. For now, return PASSING.
+    // Note: bReserved[0] = CylLow, bReserved[1] = CylHigh (by convention)
+    sendCmdOut->DriverStatus.bReserved[0] = SMART_CYL_LOW;   // 0x4F = PASSING
+    sendCmdOut->DriverStatus.bReserved[1] = SMART_CYL_HI;    // 0xC2 = PASSING
+
+    Srb->DataTransferLength = sizeof(SRB_IO_CONTROL) + sizeof(SENDCMDOUTPARAMS) - 1;
+    srbControl->ReturnCode = 0;
+    Srb->SrbStatus = SRB_STATUS_SUCCESS;
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: RETURN_STATUS DONE\n");
+#endif
+    return TRUE;
+}
+
+//
 // HandleIO_SCSIDISK - Process SMART/ATA pass-through IOCTLs
 //
-// for now we dont really support any SCSIDISK IOCTLS so all return FALSE
-// smartctl calls 001B0500 which seems to be from windows XP
 BOOLEAN HandleIO_SCSIDISK(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb)
 {
     PSRB_IO_CONTROL srbControl;
@@ -1150,6 +1532,43 @@ BOOLEAN HandleIO_SCSIDISK(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
             ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_IDE_PASS_THROUGH\n");
 #endif
             return FALSE;
+        case IOCTL_SCSI_MINIPORT_SMART_VERSION:
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_SCSI_MINIPORT_SMART_VERSION\n");
+#endif
+            return HandleSmartGetVersion(DevExt, Srb, srbControl);
+        case IOCTL_SCSI_MINIPORT_IDENTIFY:
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_SCSI_MINIPORT_IDENTIFY\n");
+#endif
+            return HandleSmartIdentify(DevExt, Srb, srbControl);
+        case IOCTL_SCSI_MINIPORT_READ_SMART_ATTRIBS:
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: IOCTL_SCSI_MINIPORT_READ_SMART_ATTRIBS\n");
+#endif
+            return HandleSmartReadAttribs(DevExt, Srb, srbControl);
+        case IOCTL_SCSI_MINIPORT_READ_SMART_THRESHOLDS:
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_SCSI_MINIPORT_READ_SMART_THRESHOLDS\n");
+#endif
+            return FALSE;
+        case IOCTL_SCSI_MINIPORT_ENABLE_SMART:
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_SCSI_MINIPORT_ENABLE_SMART\n");
+#endif
+            return HandleSmartEnableDisable(DevExt, Srb, srbControl, TRUE);
+
+        case IOCTL_SCSI_MINIPORT_DISABLE_SMART:
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_SCSI_MINIPORT_DISABLE_SMART\n");
+#endif
+            return HandleSmartEnableDisable(DevExt, Srb, srbControl, FALSE);
+        case IOCTL_SCSI_MINIPORT_RETURN_STATUS:
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_SCSI_MINIPORT_RETURN_STATUS\n");
+#endif
+            return HandleSmartReturnStatus(DevExt, Srb, srbControl);
+
         default:
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: SCSIDISK unknown IOCTL:%08X function:%03X\n", srbControl->ControlCode, (srbControl->ControlCode >> 2) & 0xFFF);
@@ -1158,6 +1577,7 @@ BOOLEAN HandleIO_SCSIDISK(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
             return FALSE; // returns SRB_STATUS_INVALID_REQUEST
     }
 
+#if 0
     // Validate that we have enough space for SENDCMDINPARAMS
     requiredSize = sizeof(SRB_IO_CONTROL) + sizeof(SENDCMDINPARAMS) - 1;
     if (Srb->DataTransferLength < requiredSize) {
@@ -1168,6 +1588,7 @@ BOOLEAN HandleIO_SCSIDISK(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
         return FALSE;
     }
 
+// implement IDE pass through, who uses it?
     // Get the SENDCMDINPARAMS structure (follows SRB_IO_CONTROL header)
     sendCmdIn = (PSENDCMDINPARAMS)((PUCHAR)Srb->DataBuffer + sizeof(SRB_IO_CONTROL));
     sendCmdOut = (PSENDCMDOUTPARAMS)((PUCHAR)Srb->DataBuffer + sizeof(SRB_IO_CONTROL));
@@ -1286,4 +1707,5 @@ BOOLEAN HandleIO_SCSIDISK(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
 #endif
             return FALSE;
     } // switch bCommandReg
+#endif
 }

@@ -195,7 +195,11 @@ typedef struct _NVME_IDENTIFY_CONTROLLER {
     UCHAR SerialNumber[20];         // Offset 4
     UCHAR ModelNumber[40];          // Offset 24
     UCHAR FirmwareRevision[8];      // Offset 64
-    UCHAR Reserved1[444];           // Offset 72-515
+    UCHAR RecommendedArbitrationBurst; // Offset 72 (RAB)
+    UCHAR Ieee[3];                  // Offset 73-75 (IEEE OUI)
+    UCHAR Cmic;                     // Offset 76
+    UCHAR MaxDataTransferSize;      // Offset 77 (MDTS - as a power of 2, in units of minimum page size)
+    UCHAR Reserved1[438];           // Offset 78-515
     ULONG NumberOfNamespaces;       // Offset 516 (NN field)
     UCHAR Reserved2[3576];          // Offset 520-4095 (rest of 4096 byte structure)
 } NVME_IDENTIFY_CONTROLLER, *PNVME_IDENTIFY_CONTROLLER;

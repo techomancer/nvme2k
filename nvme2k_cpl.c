@@ -92,28 +92,39 @@ VOID NvmeProcessGetLogPageCompletion(IN PHW_DEVICE_EXTENSION DevExt, IN USHORT s
             PSRB_IO_CONTROL srbControl = (PSRB_IO_CONTROL)Srb->DataBuffer;
             PSENDCMDOUTPARAMS sendCmdOut = (PSENDCMDOUTPARAMS)((PUCHAR)Srb->DataBuffer + sizeof(SRB_IO_CONTROL));
 
-            if (status == NVME_SC_SUCCESS && prpBuffer) {
-                PNVME_SMART_INFO nvmeSmart = (PNVME_SMART_INFO)prpBuffer;
-                PATA_SMART_DATA ataSmart = (PATA_SMART_DATA)sendCmdOut->bBuffer;
-
-                // Convert NVMe SMART/Health log to ATA SMART format
-                NvmeSmartToAtaSmart(nvmeSmart, ataSmart);
-
-                sendCmdOut->cBufferSize = 512;
-                RtlZeroMemory(&sendCmdOut->DriverStatus, sizeof(DRIVERSTATUS));
-                sendCmdOut->DriverStatus.bDriverError = 0;
-                sendCmdOut->DriverStatus.bIDEError = 0;
-
-                srbControl->ReturnCode = 0;
-                Srb->SrbStatus = SRB_STATUS_SUCCESS;
-
-            } else {
+            if (status != NVME_SC_SUCCESS || !prpBuffer) {
                 // Command failed
+#ifdef NVME2K_DBG
+                ScsiDebugPrint(0, "nvme2k: FAILED Log Page completion for SRB_FUNCTION_IO_CONTROL 0x%02X\n", Srb->Function);
+#endif
                 sendCmdOut->cBufferSize = 0;
                 sendCmdOut->DriverStatus.bDriverError = 1;
                 sendCmdOut->DriverStatus.bIDEError = 0x04;  // Aborted
                 srbControl->ReturnCode = 1;
+                Srb->DataTransferLength = 0;
                 Srb->SrbStatus = SRB_STATUS_ERROR;
+            } else
+            if (RtlCompareMemory(srbControl->Signature, "SCSIDISK", 8) == 8
+                && srbControl->ControlCode == IOCTL_SCSI_MINIPORT_READ_SMART_ATTRIBS) {
+                    PNVME_SMART_INFO nvmeSmart = (PNVME_SMART_INFO)prpBuffer;
+                    PATA_SMART_DATA ataSmart = (PATA_SMART_DATA)sendCmdOut->bBuffer;
+
+                    // Convert NVMe SMART/Health log to ATA SMART format
+                    NvmeSmartToAtaSmart(nvmeSmart, ataSmart);
+
+                    sendCmdOut->cBufferSize = 512;
+                    RtlZeroMemory(&sendCmdOut->DriverStatus, sizeof(DRIVERSTATUS));
+                    sendCmdOut->DriverStatus.bDriverError = 0;
+                    sendCmdOut->DriverStatus.bIDEError = 0;
+
+                    // Set DataTransferLength to total size returned
+                    Srb->DataTransferLength = sizeof(SRB_IO_CONTROL) + sizeof(SENDCMDOUTPARAMS) + 512 - 1;
+
+                    srbControl->ReturnCode = 0;
+                    Srb->SrbStatus = SRB_STATUS_SUCCESS;
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: Get Log Page completion for SRB_FUNCTION_IO_CONTROL/IOCTL_SCSI_MINIPORT_READ_SMART_ATTRIBS 0x%02X\n", Srb->Function);
+#endif
             }
         } else {
             // Unknown request type for Get Log Page
@@ -122,7 +133,6 @@ VOID NvmeProcessGetLogPageCompletion(IN PHW_DEVICE_EXTENSION DevExt, IN USHORT s
 #endif
             Srb->SrbStatus = SRB_STATUS_ERROR;
         }
-
         // Complete the SRB, scsiport takes control
         ScsiPortNotification(RequestComplete, DevExt, Srb);
     }
@@ -222,6 +232,7 @@ BOOLEAN NvmeProcessAdminCompletion(IN PHW_DEVICE_EXTENSION DevExt)
                 case ADMIN_CID_IDENTIFY_CONTROLLER:
                     if (status == NVME_SC_SUCCESS) {
                         PNVME_IDENTIFY_CONTROLLER ctrlData = (PNVME_IDENTIFY_CONTROLLER)DevExt->UtilityBuffer;
+                        ULONG driverMaxTransfer;
 
                         // Copy and null-terminate strings
                         RtlCopyMemory(DevExt->ControllerSerialNumber, ctrlData->SerialNumber, 20);
@@ -235,10 +246,42 @@ BOOLEAN NvmeProcessAdminCompletion(IN PHW_DEVICE_EXTENSION DevExt)
 
                         DevExt->NumberOfNamespaces = ctrlData->NumberOfNamespaces;
 
+                        // Read MDTS (Maximum Data Transfer Size)
+                        // Per NVMe spec: MDTS specifies the maximum data transfer size for a command
+                        // Value is in units of minimum memory page size (CAP.MPSMIN)
+                        // Maximum transfer = 2^MDTS * minimum page size
+                        // If MDTS is 0, there is no maximum transfer size limit from the controller
+                        DevExt->MaxDataTransferSizePower = ctrlData->MaxDataTransferSize;
+
+                        // Driver maximum: One PRP list page with 512 entries * 4KB per entry = 2MB
+                        driverMaxTransfer = 512 * PAGE_SIZE;
+
+                        if (DevExt->MaxDataTransferSizePower == 0) {
+                            // No controller-imposed limit
+                            DevExt->MaxTransferSizeBytes = driverMaxTransfer;
+                        } else {
+                            // Calculate: 2^MDTS * PageSize (PageSize = 4KB)
+                            DevExt->MaxTransferSizeBytes = (1UL << DevExt->MaxDataTransferSizePower) * PAGE_SIZE;
+
+                            // Clamp to driver maximum
+                            if (DevExt->MaxTransferSizeBytes > driverMaxTransfer) {
+                                DevExt->MaxTransferSizeBytes = driverMaxTransfer;
+                            }
+                        }
+
 #ifdef NVME2K_DBG
                         ScsiDebugPrint(0, "nvme2k: Identified controller - Model: %.40s SN: %.20s FW: %.8s NN: %u\n",
                                     DevExt->ControllerModelNumber, DevExt->ControllerSerialNumber,
                                     DevExt->ControllerFirmwareRevision, DevExt->NumberOfNamespaces);
+                        if (DevExt->MaxDataTransferSizePower == 0) {
+                            ScsiDebugPrint(0, "nvme2k: MDTS=0 (no controller limit), using driver max %u bytes\n",
+                                        DevExt->MaxTransferSizeBytes);
+                        } else {
+                            ScsiDebugPrint(0, "nvme2k: MDTS=%u (%u bytes), final max transfer = %u bytes\n",
+                                        DevExt->MaxDataTransferSizePower,
+                                        (1UL << DevExt->MaxDataTransferSizePower) * PAGE_SIZE,
+                                        DevExt->MaxTransferSizeBytes);
+                        }
 #endif
                         NvmeIdentifyNamespace(DevExt);
                     }
@@ -272,6 +315,8 @@ BOOLEAN NvmeProcessAdminCompletion(IN PHW_DEVICE_EXTENSION DevExt)
 #ifdef NVME2K_DBG
                     ScsiDebugPrint(0, "nvme2k: unknown init time admin CID %04X\n", commandId);
 #endif
+                    ;
+                    
             }
         } else {
             // Post-initialization admin commands
