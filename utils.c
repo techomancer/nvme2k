@@ -612,6 +612,9 @@ VOID NvmeToAtaIdentify(
 
     // Word 128: Security status
     WRITE_USHORT(AtaIdentify->SecurityStatus, 0x0000);
+
+    // Word 217: Nominal Media Rotation Rate (1 = SSD)
+    WRITE_USHORT(AtaIdentify->NominalMediaRotationRate, 0x0001);
 }
 
 //

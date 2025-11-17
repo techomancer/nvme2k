@@ -345,7 +345,9 @@ typedef struct _ATA_IDENTIFY_DEVICE_STRUCT {
     UCHAR RemovableMediaStatus[2];       // Word 126: Removable media status notification
     UCHAR SecurityStatus[2];             // Word 127: Security status
     UCHAR VendorSpecific[62];            // Word 128-158: Vendor specific
-    UCHAR Reserved12[194];               // Word 159-255: Reserved
+    UCHAR Reserved12[116];               // Word 159-216: Reserved
+    UCHAR NominalMediaRotationRate[2];   // Word 217: Nominal Media Rotation Rate (1=SSD, 0x0401-0xFFFE=RPM)
+    UCHAR Reserved13[76];                // Word 218-255: Reserved
 } ATA_IDENTIFY_DEVICE_STRUCT, *PATA_IDENTIFY_DEVICE_STRUCT;
 
 #pragma pack(pop)
