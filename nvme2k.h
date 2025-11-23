@@ -37,17 +37,7 @@
 // Memory constants
 //
 #define PAGE_SIZE                           0x1000  // 4KB page size
-
-//
-// Uncached memory size calculation:
-// - Admin SQ: 4096 bytes (4KB aligned)
-// - I/O SQ: 4096 bytes (4KB aligned)
-// - Utility buffer / PRP list pool: 40960 bytes (10 pages * 4KB, page-aligned)
-// - Admin CQ: 4096 bytes (4KB aligned)
-// - I/O CQ: 4096 bytes (4KB aligned)
-// Total: ~60KB with alignment
-//
-#define UNCACHED_EXTENSION_SIZE             (PAGE_SIZE * 16)  // 64KB for safety
+#define PAGE_SHIFT                          12      // log2(PAGE_SIZE)
 
 //
 // NVMe PCI Class Codes
@@ -67,6 +57,7 @@
 #define PCI_CLASS_CODE_OFFSET               0x09
 #define PCI_HEADER_TYPE_OFFSET              0x0E
 #define PCI_BASE_ADDRESS_0                  0x10
+#define PCI_BASE_ADDRESS_1                  0x14
 #define PCI_SUBSYSTEM_VENDOR_ID_OFFSET      0x2C
 #define PCI_SUBSYSTEM_ID_OFFSET             0x2E
 #define PCI_INTERRUPT_LINE_OFFSET           0x3C
@@ -91,11 +82,6 @@
 //
 #define NVME_MAX_QUEUE_SIZE     (PAGE_SIZE/NVME_SQ_ENTRY_SIZE)  // Maximum we can fit in a page (64)
                                                                  // Actual size determined by min(NVME_MAX_QUEUE_SIZE, MQES+1)
-#define SG_LIST_PAGES           10      // Number of PRP list pages (shared pool, reused across commands)
-                                        // Each page holds 512 PRP entries (8 bytes each)
-                                        // Max transfer per page: 512 * 4KB = 2MB
-                                        // With 10 pages: up to 20MB transfers
-
 //
 // NVMe Queue Pair
 //
@@ -147,7 +133,7 @@ typedef struct _NVME_SRB_EXTENSION {
 // Admin Command IDs for post-init operations (must be > ADMIN_CID_INIT_COMPLETE)
 //
 #define ADMIN_CID_GET_LOG_PAGE          6   // Get Log Page (untagged, only one at a time)
-// SG_LIST_PAGES IDs reserved for page index
+// SgListPages IDs reserved for page index
 
 //
 // Admin Command IDs for shutdown sequence (special, non-colliding values)
@@ -179,7 +165,7 @@ typedef struct _HW_DEVICE_EXTENSION {
     ULONG PageSize;                                 // Offset 0x34 (52)
     ULONG DoorbellStride;                           // Offset 0x38 (56)
     USHORT MaxQueueEntries;                         // Offset 0x3C (60)
-    USHORT Reserved3;                               // Offset 0x3E (62)
+    USHORT SgListPages;                             // Offset 0x3E (62)
 
     // Admin Queue
     NVME_QUEUE AdminQueue;                          // Offset 0x40 (64) - 56 bytes [8-byte aligned]
@@ -190,7 +176,7 @@ typedef struct _HW_DEVICE_EXTENSION {
     // Command tracking
     PSCSI_REQUEST_BLOCK NonTaggedInFlight;          // Offset 0xB0 (176)
     USHORT NextNonTaggedId;                         // Offset 0xB4 (180)
-    BOOLEAN Reserved3_1;                            // Offset 0xB6 (182)
+    BOOLEAN Busy;                                   // Offset 0xB6 (182)
     BOOLEAN InitComplete;                           // Offset 0xB7 (183)
 
     // SMP synchronization for interrupt handler
@@ -295,13 +281,16 @@ BOOLEAN NvmeSubmitIoCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PNVME_COMMAND Cmd
 BOOLEAN NvmeSubmitAdminCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PNVME_COMMAND Cmd);
 BOOLEAN NvmeProcessAdminCompletion(IN PHW_DEVICE_EXTENSION DevExt);
 VOID NvmeShutdownController(IN PHW_DEVICE_EXTENSION DevExt);
+BOOLEAN NvmeSanitizeController(IN PHW_DEVICE_EXTENSION DevExt);
+BOOLEAN NvmeInitializeController(IN PHW_DEVICE_EXTENSION DevExt);
+VOID NvmeEnableInterrupts(IN PHW_DEVICE_EXTENSION DevExt);
 VOID FallbackTimer(IN PVOID DeviceExtension);
 VOID NvmeProcessGetLogPageCompletion(IN PHW_DEVICE_EXTENSION DevExt, IN USHORT status, USHORT commandId);
 BOOLEAN NvmeProcessIoCompletion(IN PHW_DEVICE_EXTENSION DevExt);
 VOID NvmeRingDoorbell(IN PHW_DEVICE_EXTENSION DevExt, IN USHORT QueueId, IN BOOLEAN IsSubmission, IN USHORT Value);
 BOOLEAN NvmeCreateIoCQ(IN PHW_DEVICE_EXTENSION DevExt);
 BOOLEAN NvmeCreateIoSQ(IN PHW_DEVICE_EXTENSION DevExt);
-BOOLEAN NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb, IN PNVME_COMMAND Cmd, IN USHORT CommandId);
+int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb, IN PNVME_COMMAND Cmd, IN USHORT CommandId);
 USHORT NvmeBuildCommandId(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb);
 USHORT NvmeBuildFlushCommandId(IN PSCSI_REQUEST_BLOCK Srb);
 PSCSI_REQUEST_BLOCK NvmeGetSrbFromCommandId(IN PHW_DEVICE_EXTENSION DevExt, IN USHORT CommandId);
@@ -318,7 +307,7 @@ UCHAR ScsiGetLogPageCodeFromSrb(IN PSCSI_REQUEST_BLOCK Srb);
 BOOLEAN ScsiSuccess(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb);
 BOOLEAN ScsiBusy(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb);
 BOOLEAN ScsiError(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb, IN UCHAR SrbStatus);
-BOOLEAN ScsiPending(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb);
+BOOLEAN ScsiPending(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Sr, IN int Next);
 
 //
 // SMART/IOCTL functions

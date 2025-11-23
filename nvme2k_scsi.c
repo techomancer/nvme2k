@@ -18,9 +18,13 @@ BOOLEAN ScsiSuccess(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb)
 BOOLEAN ScsiBusy(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb)
 {
     Srb->SrbStatus = SRB_STATUS_BUSY;
-    ScsiPortNotification(RequestComplete, DevExt, Srb);
-    ScsiPortNotification(NextRequest, DevExt, NULL);
-    // alternatively return FALSE?
+    ScsiPortNotification(RequestComplete, DevExt, Srb);    
+    if (DevExt->CurrentPrpListPagesUsed >= DevExt->SgListPages
+        || DevExt->CurrentQueueDepth) {
+        DevExt->Busy = TRUE;
+    } else {
+        ScsiPortNotification(NextRequest, DevExt, NULL);  
+    }
     return TRUE;
 }
 
@@ -32,9 +36,13 @@ BOOLEAN ScsiError(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb, IN
     return TRUE;
 }
 
-BOOLEAN ScsiPending(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb)
+BOOLEAN ScsiPending(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb, IN int Next)
 {
     Srb->SrbStatus = SRB_STATUS_PENDING;
+    if (!Next) {
+        DevExt->Busy = TRUE; // completion will send next reqest
+        return TRUE;
+    }
     if (IsTagged(Srb))
         ScsiPortNotification(NextLuRequest, DevExt, 0, 0, 0);
     else
@@ -362,10 +370,23 @@ BOOLEAN ScsiHandleReadWrite(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLO
     NVME_COMMAND nvmeCmd;
     USHORT commandId;
     PNVME_SRB_EXTENSION srbExt;
+    int rc;
 
     // Check if namespace is identified. If not, the device is not ready for I/O.
     if (DevExt->NamespaceSizeInBlocks == 0) {
         return ScsiBusy(DevExt, Srb);
+    }
+
+    // Validate transfer size against MDTS
+    if (Srb->DataTransferLength > DevExt->MaxTransferSizeBytes) {
+        ScsiDebugPrint(0, "nvme2k: Buffer size %u exceeds MDTS limit %u - rejecting\n",
+                       Srb->DataTransferLength, DevExt->MaxTransferSizeBytes);
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: Buffer size %u exceeds MDTS limit %u - rejecting\n",
+                       Srb->DataTransferLength, DevExt->MaxTransferSizeBytes);
+#endif
+        DevExt->RejectedRequests++;        
+        return ScsiError(DevExt, Srb, SRB_STATUS_INVALID_REQUEST);
     }
 
     // Check if this is a non-tagged request (QueueTag == SP_UNTAGGED or no queue action enabled)
@@ -425,16 +446,26 @@ BOOLEAN ScsiHandleReadWrite(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLO
 
     // Build the NVMe Read/Write command from the SCSI CDB.
     RtlZeroMemory(&nvmeCmd, sizeof(NVME_COMMAND));
-    if (!NvmeBuildReadWriteCommand(DevExt, Srb, &nvmeCmd, commandId)) {
+    rc = NvmeBuildReadWriteCommand(DevExt, Srb, &nvmeCmd, commandId);
+    if (rc <=0) {
         // most likely couldnt get memory for PRP list
-        DevExt->NonTaggedInFlight = NULL;
-        return ScsiBusy(DevExt, Srb);
+        
+        if (rc == 0) {
+            DevExt->NonTaggedInFlight = NULL;
+            return ScsiBusy(DevExt, Srb);
+        } else {
+            // NonTaggedInFlight cleared by by callee to maintain ordering
+            // ScsiError called by callee
+            return TRUE; 
+        }
     }
 
     // Submit the command to the I/O queue.
     if (NvmeSubmitIoCommand(DevExt, &nvmeCmd)) {
         // Command submitted successfully, mark SRB as pending.
-        return ScsiPending(DevExt, Srb);
+        return ScsiPending(DevExt, Srb, 
+            DevExt->CurrentPrpListPagesUsed < (ULONG)(DevExt->SgListPages)
+            || DevExt->CurrentQueueDepth >= NVME_MAX_QUEUE_SIZE);
     } else {
         // Submission failed, likely a full queue. Free resources and mark as busy.
         if (srbExt->PrpListPage != 0xFF) {
@@ -480,7 +511,7 @@ BOOLEAN ScsiHandleLogSense(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOC
         }
 
         // Mark SRB as pending - will be completed in interrupt handler
-        return ScsiPending(DevExt, Srb);
+        return ScsiPending(DevExt, Srb, 1);
     } else {
         // Unsupported log page
         return ScsiError(DevExt, Srb, SRB_STATUS_INVALID_REQUEST);
@@ -530,7 +561,7 @@ BOOLEAN ScsiHandleSatPassthrough(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUES
         }
 
         // Mark SRB as pending - will be completed in interrupt handler
-        return ScsiPending(DevExt, Srb);
+        return ScsiPending(DevExt, Srb, 1);
     } else if (ataCommand == ATA_SMART_CMD && ataFeatures == ATA_SMART_READ_LOG) {
         // SMART READ LOG - return empty log (NVMe doesn't support ATA-style log pages)
         // Ensure we have buffer space for output (512 bytes)
@@ -594,7 +625,7 @@ BOOLEAN ScsiHandleFlush(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK S
 
     // Submit the Flush command
     if (NvmeSubmitIoCommand(DevExt, &nvmeCmd)) {
-        return ScsiPending(DevExt, Srb);
+        return ScsiPending(DevExt, Srb, 1);
     } else {
         // Submission failed
         DevExt->NonTaggedInFlight = NULL;

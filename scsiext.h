@@ -341,7 +341,9 @@ typedef struct _ATA_IDENTIFY_DEVICE_STRUCT {
     UCHAR HardwareResetResult[2];        // Word 93: Hardware reset result
     UCHAR Reserved10[12];                // Word 94-99: Reserved
     UCHAR TotalAddressableSectors48[8];  // Word 100-103: Total addressable sectors (LBA-48)
-    UCHAR Reserved11[44];                // Word 104-125: Reserved
+    UCHAR Reserved11a[8];                // Word 104-107: Reserved
+    UCHAR WorldWideName[8];              // Word 108-111: World Wide Name (WWN) - 64-bit identifier
+    UCHAR Reserved11b[28];               // Word 112-125: Reserved
     UCHAR RemovableMediaStatus[2];       // Word 126: Removable media status notification
     UCHAR SecurityStatus[2];             // Word 127: Security status
     UCHAR VendorSpecific[62];            // Word 128-158: Vendor specific

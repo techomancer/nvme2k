@@ -416,7 +416,7 @@ PSCSI_REQUEST_BLOCK NvmeGetSrbFromCommandId(IN PHW_DEVICE_EXTENSION DevExt, IN U
 //
 // NvmeBuildReadWriteCommand - Build NVMe Read/Write command from SCSI CDB
 //
-BOOLEAN NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb, IN PNVME_COMMAND Cmd, IN USHORT CommandId)
+int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb, IN PNVME_COMMAND Cmd, IN USHORT CommandId)
 {
     PCDB cdb = (PCDB)Srb->Cdb;
     ULONGLONG lba = 0;
@@ -425,7 +425,6 @@ BOOLEAN NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUE
     PHYSICAL_ADDRESS physAddr;
     PHYSICAL_ADDRESS physAddr2;
     ULONG length;
-    ULONG pageSize = 4096;
     ULONG offsetInPage;
     ULONG firstPageBytes;
     PVOID currentPageVirtual;
@@ -468,14 +467,31 @@ BOOLEAN NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUE
             break;
     }
 
-    // Validate transfer size against MDTS
-    if (Srb->DataTransferLength > DevExt->MaxTransferSizeBytes) {
+    // validate against buffer size
+    if (numBlocks * DevExt->NamespaceBlockSize > Srb->DataTransferLength) {
+        ScsiDebugPrint(0, "nvme2k: Transfer size in blocks %u exceeds buffer size %u - rejecting\n",
+                       numBlocks, Srb->DataTransferLength);
 #ifdef NVME2K_DBG
-        ScsiDebugPrint(0, "nvme2k: Transfer size %u exceeds MDTS limit %u - rejecting\n",
-                       Srb->DataTransferLength, DevExt->MaxTransferSizeBytes);
+        ScsiDebugPrint(0, "nvme2k: Transfer size in blocks %u exceeds buffer size %u - rejecting\n",
+                       numBlocks, Srb->DataTransferLength);
 #endif
         DevExt->RejectedRequests++;
-        return FALSE;
+        DevExt->NonTaggedInFlight = NULL;
+        ScsiError(DevExt, Srb, SRB_STATUS_INVALID_REQUEST);
+        return -1;    
+    }
+    // Validate transfer size against MDTS
+    if (numBlocks * DevExt->NamespaceBlockSize > DevExt->MaxTransferSizeBytes) {
+        ScsiDebugPrint(0, "nvme2k: Transfer size in blocks %u exceeds MDTS limit %u - rejecting\n",
+                       numBlocks, DevExt->MaxTransferSizeBytes);
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: Transfer size in blocks %u exceeds MDTS limit %u - rejecting\n",
+                       numBlocks, DevExt->MaxTransferSizeBytes);
+#endif
+        DevExt->RejectedRequests++;
+        DevExt->NonTaggedInFlight = NULL;
+        ScsiError(DevExt, Srb, SRB_STATUS_INVALID_REQUEST);
+        return -1;
     }
 
     // Build NVMe command
@@ -577,7 +593,7 @@ BOOLEAN NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUE
                            (ULONG)(Cmd->PRP1 >> 32), (ULONG)(Cmd->PRP1 & 0xFFFFFFFF));
 #endif
 
-            return TRUE;
+            return 1;
         }
     }
 
@@ -632,9 +648,9 @@ BOOLEAN NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUE
         prpListPage = AllocatePrpListPage(DevExt);
         if (prpListPage == 0xFF) {
             // No PRP list pages available - this shouldn't happen if we sized correctly
-            ScsiDebugPrint(0, "nvme2k: ERROR - No PRP list pages available!\n");
+            ScsiDebugPrint(0, "nvme2k: No PRP list pages available %d/%d!\n", DevExt->CurrentPrpListPagesUsed, DevExt->SgListPages);
             Cmd->PRP2 = 0;
-            return FALSE;
+            return 0;
         }
 
         // Store PRP list page in SRB extension
@@ -681,7 +697,7 @@ BOOLEAN NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUE
     }
 
     // CDW10-15 already set above before TRIM check
-    return TRUE;
+    return 1;
 }
 
 //
@@ -873,5 +889,415 @@ cleanup_state:
 
 #ifdef NVME2K_DBG
     ScsiDebugPrint(0, "nvme2k: Shutdown sequence complete\n");
+#endif
+}
+
+//
+// NvmeSanitizeController - Sanitize and disable the NVMe controller
+// This function handles cleanup of any residual state from previous drivers/option ROMs
+//
+BOOLEAN NvmeSanitizeController(IN PHW_DEVICE_EXTENSION DevExt)
+{
+    ULONG cc, csts;
+    int retryCount;
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NvmeSanitizeController called\n");
+#endif
+
+    //
+    // NUCLEAR OPTION: Assume the NVMe option ROM or previous driver left the controller
+    // in an unknown state, possibly with queues configured and interrupts firing.
+    // We need to completely reset everything before we start.
+    //
+
+    // Step 1: MASK ALL INTERRUPTS IMMEDIATELY to stop any interrupt storm
+    // This is critical - do this BEFORE reading any other registers or state
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NvmeSanitizeController - masking all interrupts\n");
+#endif
+    NvmeWriteReg32(DevExt, NVME_REG_INTMS, 0xFFFFFFFF);  // Mask all 32 interrupt vectors
+
+    // Step 2: Check current controller state
+    csts = NvmeReadReg32(DevExt, NVME_REG_CSTS);
+    cc = NvmeReadReg32(DevExt, NVME_REG_CC);
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NvmeSanitizeController - controller state before reset: CC=%08X CSTS=%08X\n", cc, csts);
+    if (csts & NVME_CSTS_RDY) {
+        ScsiDebugPrint(0, "nvme2k: NvmeSanitizeController - WARNING: Controller is READY (option ROM left it enabled!)\n");
+    }
+    if (csts & NVME_CSTS_CFS) {
+        ScsiDebugPrint(0, "nvme2k: NvmeSanitizeController - WARNING: Controller Fatal Status bit set!\n");
+    }
+#endif
+
+    // Step 3: Clear admin queue registers BEFORE disabling controller
+    // This prevents the controller from trying to access stale queue memory
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NvmeSanitizeController - clearing admin queue registers\n");
+#endif
+    NvmeWriteReg32(DevExt, NVME_REG_AQA, 0);
+    NvmeWriteReg64(DevExt, NVME_REG_ASQ, 0);
+    NvmeWriteReg64(DevExt, NVME_REG_ACQ, 0);
+
+    //
+    // Step 4: Force controller disable, regardless of current state
+    // Retry multiple times if needed - the option ROM may have left it in a weird state
+    //
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NvmeSanitizeController - disabling controller\n");
+#endif
+    retryCount = 5; // Try up to 5 times with increasing aggression
+    while (retryCount > 0) {
+        // Clear CC.EN and CC.SHN (shutdown notification) bits
+        cc = NvmeReadReg32(DevExt, NVME_REG_CC);
+        cc &= ~(NVME_CC_ENABLE | NVME_CC_SHN_MASK);
+        NvmeWriteReg32(DevExt, NVME_REG_CC, cc);
+
+        // Wait for controller to become not ready
+        if (NvmeWaitForReady(DevExt, FALSE)) {
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: NvmeSanitizeController - controller disabled successfully\n");
+#endif
+            break; // Controller is disabled, proceed
+        }
+
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: NvmeSanitizeController - controller disable retry %d/5\n", 6 - retryCount);
+#endif
+        retryCount--;
+
+        // On the last retry, try writing 0 to CC entirely (nuclear option)
+        if (retryCount == 1) {
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: NvmeSanitizeController - trying nuclear option: writing 0 to CC\n");
+#endif
+            NvmeWriteReg32(DevExt, NVME_REG_CC, 0);
+            if (NvmeWaitForReady(DevExt, FALSE)) {
+                break;
+            }
+        }
+    }
+
+    // Step 5: Verify controller is disabled
+    csts = NvmeReadReg32(DevExt, NVME_REG_CSTS);
+    if (csts & NVME_CSTS_RDY) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: NvmeSanitizeController - FATAL: controller failed to disable after 5 retries, CSTS=%08X\n", csts);
+#endif
+        return FALSE;
+    }
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NvmeSanitizeController - controller is now disabled and clean\n");
+#endif
+
+    // CRITICAL: QEMU's nvme_ctrl_reset() clears INTMS register to 0 during controller disable!
+    // This UNMASKS all interrupts, and if there's stale n->irq_status from the option ROM,
+    // QEMU will immediately re-assert the interrupt line.
+    // We MUST mask interrupts again after controller reset completes.
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NvmeSanitizeController - re-masking interrupts after controller reset (QEMU clears INTMS during reset)\n");
+#endif
+    NvmeWriteReg32(DevExt, NVME_REG_INTMS, 0xFFFFFFFF);
+
+    return TRUE;
+}
+
+//
+// NvmeInitializeController - Initialize the NVMe controller with queues and perform device discovery
+//
+BOOLEAN NvmeInitializeController(IN PHW_DEVICE_EXTENSION DevExt)
+{
+    ULONG cc, aqa;
+    ULONG pageShift;
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NvmeInitializeController called\n");
+#endif
+
+    // Read controller capabilities to determine queue sizes and other parameters
+    DevExt->ControllerCapabilities = NvmeReadReg64(DevExt, NVME_REG_CAP);
+    DevExt->Version = NvmeReadReg32(DevExt, NVME_REG_VS);
+
+    // Parse MQES (Maximum Queue Entries Supported) from CAP register
+    // MQES is 0-based, so actual max queue size is MQES + 1
+    DevExt->MaxQueueEntries = (USHORT)((DevExt->ControllerCapabilities & NVME_CAP_MQES_MASK) + 1);
+
+    // Calculate doorbell stride (in bytes)
+    DevExt->DoorbellStride = 4 << (((ULONG)(DevExt->ControllerCapabilities >> 32) & 0xF));
+
+    // Determine page size (4KB minimum for this driver)
+    DevExt->PageSize = PAGE_SIZE; // Hardcoded to 4KB
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NvmeInitializeController - CAP=%08X%08X VS=%08X MQES=%u DBS=%u\n",
+                   (ULONG)(DevExt->ControllerCapabilities >> 32),
+                   (ULONG)(DevExt->ControllerCapabilities & 0xFFFFFFFF),
+                   DevExt->Version, DevExt->MaxQueueEntries, DevExt->DoorbellStride);
+#endif
+
+    // Allocate all uncached memory in proper order to avoid alignment waste
+    // Order: All 4KB-aligned buffers first, then smaller aligned buffers
+    // This minimizes wasted space from alignment padding
+
+    // Determine actual queue size - use minimum of our max and controller's max
+    {
+        USHORT queueSize = NVME_MAX_QUEUE_SIZE;
+        if (queueSize > DevExt->MaxQueueEntries) {
+            queueSize = DevExt->MaxQueueEntries;
+        }
+
+        // 1. Allocate Admin SQ (4KB aligned)
+        DevExt->AdminQueue.QueueSize = queueSize;
+        DevExt->AdminQueue.QueueId = 0;
+        if (!AllocateUncachedMemory(DevExt, queueSize * NVME_SQ_ENTRY_SIZE, PAGE_SIZE,
+                                    &DevExt->AdminQueue.SubmissionQueue,
+                                    &DevExt->AdminQueue.SubmissionQueuePhys)) {
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: NvmeInitializeController - failed to allocate admin SQ\n");
+#endif
+            return FALSE;
+        }
+
+        // 2. Allocate I/O SQ (4KB aligned)
+        DevExt->IoQueue.QueueSize = queueSize;
+        DevExt->IoQueue.QueueId = 1;
+        if (!AllocateUncachedMemory(DevExt, queueSize * NVME_SQ_ENTRY_SIZE, PAGE_SIZE,
+                                    &DevExt->IoQueue.SubmissionQueue,
+                                    &DevExt->IoQueue.SubmissionQueuePhys)) {
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: NvmeInitializeController - failed to allocate I/O SQ\n");
+#endif
+            return FALSE;
+        }
+
+        // 3. Allocate utility buffer (large enough for SgListPages * 4KB)
+        // During init: used for Identify commands
+        // After init: repurposed as PRP list page pool
+        if (!AllocateUncachedMemory(DevExt, DevExt->SgListPages * PAGE_SIZE, PAGE_SIZE,
+                                    &DevExt->UtilityBuffer,
+                                    &DevExt->UtilityBufferPhys)) {
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: NvmeInitializeController - failed to allocate utility buffer\n");
+#endif
+            return FALSE;
+        }
+        // Initialize PRP page allocator.
+        // It is aliased with UtilityBuffer and only valid after init sequence.
+        DevExt->PrpListPages = DevExt->UtilityBuffer;
+        DevExt->PrpListPagesPhys = DevExt->UtilityBufferPhys;
+        DevExt->PrpListPageBitmap = 0;  // All pages free
+
+        // 4. Allocate Admin CQ (must be page-aligned for NVMe)
+        if (!AllocateUncachedMemory(DevExt, queueSize * NVME_CQ_ENTRY_SIZE, PAGE_SIZE,
+                                    &DevExt->AdminQueue.CompletionQueue,
+                                    &DevExt->AdminQueue.CompletionQueuePhys)) {
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: NvmeInitializeController - failed to allocate admin CQ\n");
+#endif
+            return FALSE;
+        }
+
+        // 5. Allocate I/O CQ (must be page-aligned for NVMe)
+        if (!AllocateUncachedMemory(DevExt, queueSize * NVME_CQ_ENTRY_SIZE, PAGE_SIZE,
+                                    &DevExt->IoQueue.CompletionQueue,
+                                    &DevExt->IoQueue.CompletionQueuePhys)) {
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: NvmeInitializeController - failed to allocate I/O CQ\n");
+#endif
+            return FALSE;
+        }
+    }
+
+    // Now all uncached memory is allocated - log final usage
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NvmeInitializeController - uncached memory usage: %u / %u bytes\n",
+                   DevExt->UncachedExtensionOffset, DevExt->UncachedExtensionSize);
+#endif
+
+    // Calculate log2(QueueSize) and mask for both queues (must be power of 2)
+    DevExt->AdminQueue.QueueSizeBits = (UCHAR)log2(DevExt->AdminQueue.QueueSize);
+    DevExt->AdminQueue.QueueSizeMask = DevExt->AdminQueue.QueueSize - 1;
+
+    DevExt->IoQueue.QueueSizeBits = (UCHAR)log2(DevExt->IoQueue.QueueSize);
+    DevExt->IoQueue.QueueSizeMask = DevExt->IoQueue.QueueSize - 1;
+
+    // Initialize SMP synchronization
+#ifdef NVME2K_USE_INTERRUPT_LOCK
+    DevExt->InterruptLock = 0;
+#endif
+
+    // Initialize Admin Queue state
+    DevExt->AdminQueue.SubmissionQueueHead = 0;
+    DevExt->AdminQueue.SubmissionQueueTail = 0;
+    // Start with QueueSize so phase = (QueueSize >> bits) & 1 = 1
+    DevExt->AdminQueue.CompletionQueueHead = DevExt->AdminQueue.QueueSize;
+    DevExt->AdminQueue.CompletionQueueTail = 0;
+#ifdef NVME2K_USE_SUBMISSION_LOCK
+    DevExt->AdminQueue.SubmissionLock = 0;
+#endif
+#ifdef NVME2K_USE_COMPLETION_LOCK
+    DevExt->AdminQueue.CompletionLock = 0;
+#endif
+
+    // Initialize I/O Queue state
+    DevExt->IoQueue.SubmissionQueueHead = 0;
+    DevExt->IoQueue.SubmissionQueueTail = 0;
+    // Start with QueueSize so phase = (QueueSize >> bits) & 1 = 1
+    DevExt->IoQueue.CompletionQueueHead = DevExt->IoQueue.QueueSize;
+    DevExt->IoQueue.CompletionQueueTail = 0;
+#ifdef NVME2K_USE_SUBMISSION_LOCK
+    DevExt->IoQueue.SubmissionLock = 0;
+#endif
+#ifdef NVME2K_USE_COMPLETION_LOCK
+    DevExt->IoQueue.CompletionLock = 0;
+#endif
+
+    // Zero out queues
+    RtlZeroMemory(DevExt->AdminQueue.SubmissionQueue, DevExt->AdminQueue.QueueSize * NVME_SQ_ENTRY_SIZE);
+    RtlZeroMemory(DevExt->AdminQueue.CompletionQueue, DevExt->AdminQueue.QueueSize * NVME_CQ_ENTRY_SIZE);
+    RtlZeroMemory(DevExt->IoQueue.SubmissionQueue, DevExt->IoQueue.QueueSize * NVME_SQ_ENTRY_SIZE);
+    RtlZeroMemory(DevExt->IoQueue.CompletionQueue, DevExt->IoQueue.QueueSize * NVME_CQ_ENTRY_SIZE);
+
+    // Clear the utility buffer
+    RtlZeroMemory(DevExt->UtilityBuffer, PAGE_SIZE);
+
+    // Configure Admin Queue Attributes
+    aqa = ((DevExt->AdminQueue.QueueSize - 1) << 16) | (DevExt->AdminQueue.QueueSize - 1);
+    NvmeWriteReg32(DevExt, NVME_REG_AQA, aqa);
+
+    // Set Admin Queue addresses
+    NvmeWriteReg64(DevExt, NVME_REG_ASQ, DevExt->AdminQueue.SubmissionQueuePhys.QuadPart);
+    NvmeWriteReg64(DevExt, NVME_REG_ACQ, DevExt->AdminQueue.CompletionQueuePhys.QuadPart);
+
+    // Configure controller
+    // Calculate MPS (Memory Page Size) based on host page size.
+    // The value is log2(PAGE_SIZE) - 12.
+    // For 4KB (4096), pageShift = log2(4096) - 12 = 12 - 12 = 0.
+    // For 8KB (8192), pageShift = log2(8192) - 12 = 13 - 12 = 1.
+    pageShift = 0; // Default for 4KB pages
+    if (DevExt->PageSize > 4096) {
+        pageShift = (ULONG)(log2(DevExt->PageSize) - 12);
+    }
+    cc = NVME_CC_ENABLE |
+         (pageShift << NVME_CC_MPS_SHIFT) |
+         NVME_CC_CSS_NVM |
+         NVME_CC_AMS_RR |
+         NVME_CC_SHN_NONE |
+         NVME_CC_IOSQES |
+         NVME_CC_IOCQES;
+
+    NvmeWriteReg32(DevExt, NVME_REG_CC, cc);
+
+    // Wait for controller to become ready
+    if (!NvmeWaitForReady(DevExt, TRUE)) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: NvmeInitializeController - controller failed to become ready\n");
+#endif
+        return FALSE;
+    }
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NvmeInitializeController - controller is ready\n");
+#endif
+
+    // IMPORTANT: Keep interrupts MASKED during initialization
+    // We will use POLLING for admin commands during init, then unmask interrupts
+    // only after init completes. This avoids the QEMU interrupt storm issue.
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NvmeInitializeController - keeping interrupts masked, will use polling during init\n");
+#endif
+    // NOTE: Interrupts stay masked (INTMS=0xFFFFFFFF from earlier)
+    // They will be unmasked in the completion handler when InitComplete is set to TRUE
+
+    DevExt->NamespaceSizeInBlocks = 0;
+    DevExt->NamespaceBlockSize = 512;  // Default to 512 bytes
+
+    DevExt->NextNonTaggedId = 0;  // Initialize non-tagged CID sequence
+    DevExt->NonTaggedInFlight = NULL;  // No non-tagged request in flight initially
+
+    // Initialize statistics
+    DevExt->CurrentQueueDepth = 0;
+    DevExt->MaxQueueDepthReached = 0;
+    DevExt->CurrentPrpListPagesUsed = 0;
+    DevExt->MaxPrpListPagesUsed = 0;
+    DevExt->TotalRequests = 0;
+    DevExt->TotalReads = 0;
+    DevExt->TotalWrites = 0;
+    DevExt->TotalBytesRead = 0;
+    DevExt->TotalBytesWritten = 0;
+    DevExt->MaxReadSize = 0;
+    DevExt->MaxWriteSize = 0;
+    DevExt->RejectedRequests = 0;
+
+    DevExt->SMARTEnabled = TRUE;
+    DevExt->Busy = FALSE;
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: PRP list pool initialized at VA=%p PA=%08X%08X (%d pages)\n",
+                    DevExt->PrpListPages,
+                    (ULONG)(DevExt->PrpListPagesPhys.QuadPart >> 32),
+                    (ULONG)(DevExt->PrpListPagesPhys.QuadPart & 0xFFFFFFFF),
+                    DevExt->SgListPages);
+#endif
+
+    // Start the initialization sequence
+    DevExt->InitComplete = FALSE;
+    DevExt->FallbackTimerNeeded = 1;
+    NvmeCreateIoCQ(DevExt);
+
+    // POLL for init completion (interrupts are masked during init)
+    // The completion handler chain will process: Create I/O CQ -> Create I/O SQ ->
+    // Identify Controller -> Identify Namespace -> set InitComplete = TRUE
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NvmeInitializeController - polling for init completion...\n");
+#endif
+    {
+        ULONG pollCount = 0;
+        while (!DevExt->InitComplete && pollCount < 10000) {  // 10 second timeout
+            NvmeProcessAdminCompletion(DevExt);
+            ScsiPortStallExecution(1000);  // 1ms
+            pollCount++;
+        }
+
+        if (!DevExt->InitComplete) {
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: NvmeInitializeController - TIMEOUT waiting for init completion!\n");
+#endif
+            return FALSE;
+        }
+    }
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NvmeInitializeController finished successfully\n");
+#endif
+    return TRUE;
+}
+
+//
+// NvmeEnableInterrupts - Enable interrupts at PCI and NVMe controller level
+//
+VOID NvmeEnableInterrupts(IN PHW_DEVICE_EXTENSION DevExt)
+{
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NvmeEnableInterrupts called\n");
+#endif
+
+    // Step 1: Enable interrupts at PCI Command Register level (clear bit 10)
+    {
+        USHORT pciCommand = ReadPciConfigWord(DevExt, PCI_COMMAND_OFFSET);
+        pciCommand &= ~PCI_INTERRUPT_DISABLE;  // Clear interrupt disable bit
+        WritePciConfigWord(DevExt, PCI_COMMAND_OFFSET, pciCommand);
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: Enabled interrupts at PCI level, Command=%04X\n", pciCommand);
+#endif
+    }
+
+    // Step 2: Unmask interrupts at NVMe controller level (unmask vector 0)
+    NvmeWriteReg32(DevExt, NVME_REG_INTMC, 0x00000001);
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: Unmasked interrupts at NVMe controller level (INTMC=0x00000001)\n");
 #endif
 }

@@ -321,7 +321,7 @@ BOOLEAN NvmeProcessAdminCompletion(IN PHW_DEVICE_EXTENSION DevExt)
         } else {
             // Post-initialization admin commands
             // Check if this is a Get Log Page command
-            if ((commandId & CID_VALUE_MASK) >= ADMIN_CID_GET_LOG_PAGE && (commandId & CID_VALUE_MASK)< ADMIN_CID_GET_LOG_PAGE + SG_LIST_PAGES) {
+            if ((commandId & CID_VALUE_MASK) >= ADMIN_CID_GET_LOG_PAGE && (commandId & CID_VALUE_MASK)< ADMIN_CID_GET_LOG_PAGE + DevExt->SgListPages) {
                 NvmeProcessGetLogPageCompletion(DevExt, status, commandId);
             } else {
                 if (ADMIN_CID_SHUTDOWN_DELETE_SQ == commandId) {
@@ -541,6 +541,12 @@ BOOLEAN NvmeProcessIoCompletion(IN PHW_DEVICE_EXTENSION DevExt)
 
             // Complete the request - ScsiPort takes ownership of the SRB
             ScsiPortNotification(RequestComplete, DevExt, Srb);
+            if (DevExt->Busy) {
+                // hopefully some resources freed up so signal that we can process next request
+                DevExt->Busy = FALSE;
+                ScsiPortNotification(NextRequest, DevExt, NULL);
+            }
+
 
             // Decrement queue depth tracking
             if (DevExt->CurrentQueueDepth > 0) {

@@ -1,13 +1,13 @@
 ; nvme2k.inf
 ; Windows 2000 Installation File for NVMe Storage Controller Driver
-; Copyright (c) 2025
+; Copyright (c) 2025 Dominik Behr
 
 [Version]
 Signature="$Windows NT$"
 Class=SCSIAdapter
 ClassGUID={4D36E97B-E325-11CE-BFC1-08002BE10318}
 Provider=%ProviderString%
-DriverVer=10/31/2025,1.0.0.2
+DriverVer=11/21/2025,1.0.0.3
 
 [DestinationDirs]
 DefaultDestDir = 12  ; DIRID_DRIVERS

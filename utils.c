@@ -116,15 +116,22 @@ VOID NvmeSmartToAtaSmart(IN PNVME_SMART_INFO NvmeSmart, OUT PATA_SMART_DATA AtaS
     }
 
     // 8. Total LBAs Written (Attribute 241) - if data units written is non-zero
+    // NVMe reports in units of 1000 * 512-byte blocks = 512,000 bytes
+    // Convert to 32MB units: 512,000 / (32 * 1024 * 1024) = 512,000 / 33,554,432 ≈ 1/65.536
+    // So multiply by 1000 * 512 and divide by (32 * 1024 * 1024) = multiply by 512000 / 33554432
+    // Simplified: divide by ~65.536, or multiply by 125 and divide by 8192
     {
-        ULONGLONG lbasWritten = READ_ULONGLONG(NvmeSmart->DataUnitsWritten);
-        ADD_ATTRIBUTE(ATA_SMART_ATTR_TOTAL_LBA_WRITTEN, 100, 100, lbasWritten);
+        ULONGLONG dataUnitsWritten = READ_ULONGLONG(NvmeSmart->DataUnitsWritten);
+        ULONGLONG units32MB = (dataUnitsWritten * 125) / 8192;
+        ADD_ATTRIBUTE(ATA_SMART_ATTR_TOTAL_LBA_WRITTEN, 100, 100, units32MB);
     }
 
     // 9. Total LBAs Read (Attribute 242)
+    // Same conversion as writes: NVMe data units to 32MB units
     {
-        ULONGLONG lbasRead = READ_ULONGLONG(NvmeSmart->DataUnitsRead);
-        ADD_ATTRIBUTE(ATA_SMART_ATTR_TOTAL_LBA_READ, 100, 100, lbasRead);
+        ULONGLONG dataUnitsRead = READ_ULONGLONG(NvmeSmart->DataUnitsRead);
+        ULONGLONG units32MB = (dataUnitsRead * 125) / 8192;
+        ADD_ATTRIBUTE(ATA_SMART_ATTR_TOTAL_LBA_READ, 100, 100, units32MB);
     }
 
     // 10. Add some zero-filled mechanical drive attributes (not applicable to NVMe)
@@ -583,7 +590,8 @@ VOID NvmeToAtaIdentify(
     WRITE_USHORT(AtaIdentify->CommandSetSupported2, 0x4401);
 
     // Word 84: Command sets supported extended
-    WRITE_USHORT(AtaIdentify->CommandSetSupportedExt, 0x4000);
+    // Bit 14: Must be 1, Bit 8: WWN supported
+    WRITE_USHORT(AtaIdentify->CommandSetSupportedExt, 0x4100);
 
     // Word 85-86: Command sets enabled (match supported)
     // Bit 1: SMART feature set enabled
@@ -607,6 +615,23 @@ VOID NvmeToAtaIdentify(
     WRITE_USHORT(AtaIdentify->TotalAddressableSectors48 + 4, (USHORT)((totalSectors >> 32) & 0xFFFF));
     WRITE_USHORT(AtaIdentify->TotalAddressableSectors48 + 6, (USHORT)((totalSectors >> 48) & 0xFFFF));
 
+    // Word 108-111: World Wide Name (WWN) - 64-bit identifier
+    // Set to "NVME2K\0\0" with word byte-swapping for ATA format
+    // In ATA, strings are stored with bytes swapped within each word
+    {
+        UCHAR wwn[8];
+
+        // Set up the WWN string "NVME2K\0\0"
+        wwn[0] = 'N'; wwn[1] = 'V'; wwn[2] = 'M'; wwn[3] = 'E';
+        wwn[4] = '2'; wwn[5] = 'K'; wwn[6] = '\0'; wwn[7] = '\0';
+
+        // Byte-swap pairs for ATA word format
+        for (i = 0; i < 8; i += 2) {
+            AtaIdentify->WorldWideName[i] = wwn[i + 1];
+            AtaIdentify->WorldWideName[i + 1] = wwn[i];
+        }
+    }
+
     // Word 127: Removable media status notification
     WRITE_USHORT(AtaIdentify->RemovableMediaStatus, 0x0000);
 
@@ -625,7 +650,7 @@ UCHAR AllocatePrpListPage(IN PHW_DEVICE_EXTENSION DevExt)
 {
     UCHAR i;
 
-    for (i = 0; i < SG_LIST_PAGES; i++) {
+    for (i = 0; i < DevExt->SgListPages; i++) {
         if ((DevExt->PrpListPageBitmap & (1 << i)) == 0) {
             // Found free page
             DevExt->PrpListPageBitmap |= (1 << i);
@@ -654,7 +679,7 @@ UCHAR AllocatePrpListPage(IN PHW_DEVICE_EXTENSION DevExt)
 //
 VOID FreePrpListPage(IN PHW_DEVICE_EXTENSION DevExt, IN UCHAR pageIndex)
 {
-    if (pageIndex < SG_LIST_PAGES) {
+    if (pageIndex < DevExt->SgListPages) {
         DevExt->PrpListPageBitmap &= ~(1 << pageIndex);
         DevExt->CurrentPrpListPagesUsed--;
 #ifdef NVME2K_DBG_TOOMUCH
@@ -668,7 +693,7 @@ VOID FreePrpListPage(IN PHW_DEVICE_EXTENSION DevExt, IN UCHAR pageIndex)
 //
 PVOID GetPrpListPageVirtual(IN PHW_DEVICE_EXTENSION DevExt, IN UCHAR pageIndex)
 {
-    if (pageIndex >= SG_LIST_PAGES) {
+    if (pageIndex >= DevExt->SgListPages) {
         return NULL;
     }
     return (PVOID)((PUCHAR)DevExt->PrpListPages + (pageIndex * PAGE_SIZE));
@@ -681,7 +706,7 @@ PHYSICAL_ADDRESS GetPrpListPagePhysical(IN PHW_DEVICE_EXTENSION DevExt, IN UCHAR
 {
     PHYSICAL_ADDRESS addr;
 
-    if (pageIndex >= SG_LIST_PAGES) {
+    if (pageIndex >= DevExt->SgListPages) {
         addr.QuadPart = 0;
         return addr;
     }
