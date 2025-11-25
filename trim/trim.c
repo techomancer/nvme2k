@@ -130,7 +130,7 @@ int send_nvme2kdb_ioctl(HANDLE hDevice, ULONG control_code, void *data_buffer, U
 int initialize_random_buffer(void)
 {
     DWORD tick_count;
-    int i;
+    ULONG i;
     ULONG chunks_in_write_buffer;
     PUCHAR dest;
 

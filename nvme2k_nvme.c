@@ -88,27 +88,11 @@ static BOOLEAN NvmeSubmitCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PNVME_QUEUE 
     ULONG currentHead;
     BOOLEAN result;
 
-#ifdef NVME2K_USE_SUBMISSION_LOCK
-    // Acquire submission queue spinlock - protects against concurrent HwStartIo calls
-    if (!AtomicCompareExchange(&Queue->SubmissionLock, 1, 0)) {
-#ifdef NVME2K_DBG
-        ScsiDebugPrint(0, "nvme2k: NvmeSubmitCommand - lock contention on QID=%d (spinning)\n", Queue->QueueId);
-#endif
-        while (!AtomicCompareExchange(&Queue->SubmissionLock, 1, 0)) {
-            // Spin waiting for lock
-            // On a busy system this is very brief since we only hold it for microseconds
-        }
-    }
-#endif
-
     // Check if queue is full - SubmissionQueueHead is protected by lock
     nextTail = (USHORT)((Queue->SubmissionQueueTail + 1) & Queue->QueueSizeMask);
     currentHead = (USHORT)(Queue->SubmissionQueueHead & Queue->QueueSizeMask);
     if (nextTail == currentHead) {
         // Queue full - release lock and return
-#ifdef NVME2K_USE_SUBMISSION_LOCK
-        AtomicSet(&Queue->SubmissionLock, 0);
-#endif
         return FALSE;
     }
 
@@ -145,11 +129,6 @@ static BOOLEAN NvmeSubmitCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PNVME_QUEUE 
     
     // Ring doorbell
     NvmeRingDoorbell(DevExt, Queue->QueueId, TRUE, (USHORT)(Queue->SubmissionQueueTail));
-
-#ifdef NVME2K_USE_SUBMISSION_LOCK
-    // Release submission queue spinlock (atomic write to ensure memory ordering)
-    AtomicSet(&Queue->SubmissionLock, 0);
-#endif
 
     return TRUE;
 }
@@ -863,12 +842,6 @@ cleanup_state:
     // Reset CQ head to QueueSize to re-establish phase bit as 1 for next init
     DevExt->AdminQueue.CompletionQueueHead = DevExt->AdminQueue.QueueSize;
     DevExt->AdminQueue.CompletionQueueTail = 0;
-#ifdef NVME2K_USE_SUBMISSION_LOCK
-    DevExt->AdminQueue.SubmissionLock = 0;
-#endif
-#ifdef NVME2K_USE_COMPLETION_LOCK
-    DevExt->AdminQueue.CompletionLock = 0;
-#endif
 
     // Reset I/O Queue state
     DevExt->IoQueue.SubmissionQueueHead = 0;
@@ -876,12 +849,6 @@ cleanup_state:
     // Reset CQ head to QueueSize to re-establish phase bit as 1 for next init
     DevExt->IoQueue.CompletionQueueHead = DevExt->IoQueue.QueueSize;
     DevExt->IoQueue.CompletionQueueTail = 0;
-#ifdef NVME2K_USE_SUBMISSION_LOCK
-    DevExt->IoQueue.SubmissionLock = 0;
-#endif
-#ifdef NVME2K_USE_COMPLETION_LOCK
-    DevExt->IoQueue.CompletionLock = 0;
-#endif
 
     // Clear init state
     DevExt->InitComplete = FALSE;
@@ -1124,23 +1091,12 @@ BOOLEAN NvmeInitializeController(IN PHW_DEVICE_EXTENSION DevExt)
     DevExt->IoQueue.QueueSizeBits = (UCHAR)log2(DevExt->IoQueue.QueueSize);
     DevExt->IoQueue.QueueSizeMask = DevExt->IoQueue.QueueSize - 1;
 
-    // Initialize SMP synchronization
-#ifdef NVME2K_USE_INTERRUPT_LOCK
-    DevExt->InterruptLock = 0;
-#endif
-
     // Initialize Admin Queue state
     DevExt->AdminQueue.SubmissionQueueHead = 0;
     DevExt->AdminQueue.SubmissionQueueTail = 0;
     // Start with QueueSize so phase = (QueueSize >> bits) & 1 = 1
     DevExt->AdminQueue.CompletionQueueHead = DevExt->AdminQueue.QueueSize;
     DevExt->AdminQueue.CompletionQueueTail = 0;
-#ifdef NVME2K_USE_SUBMISSION_LOCK
-    DevExt->AdminQueue.SubmissionLock = 0;
-#endif
-#ifdef NVME2K_USE_COMPLETION_LOCK
-    DevExt->AdminQueue.CompletionLock = 0;
-#endif
 
     // Initialize I/O Queue state
     DevExt->IoQueue.SubmissionQueueHead = 0;
@@ -1148,12 +1104,6 @@ BOOLEAN NvmeInitializeController(IN PHW_DEVICE_EXTENSION DevExt)
     // Start with QueueSize so phase = (QueueSize >> bits) & 1 = 1
     DevExt->IoQueue.CompletionQueueHead = DevExt->IoQueue.QueueSize;
     DevExt->IoQueue.CompletionQueueTail = 0;
-#ifdef NVME2K_USE_SUBMISSION_LOCK
-    DevExt->IoQueue.SubmissionLock = 0;
-#endif
-#ifdef NVME2K_USE_COMPLETION_LOCK
-    DevExt->IoQueue.CompletionLock = 0;
-#endif
 
     // Zero out queues
     RtlZeroMemory(DevExt->AdminQueue.SubmissionQueue, DevExt->AdminQueue.QueueSize * NVME_SQ_ENTRY_SIZE);

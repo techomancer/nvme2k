@@ -761,19 +761,6 @@ BOOLEAN HwInterrupt(IN PVOID DeviceExtension)
         }
     }   
 
-#ifdef NVME2K_USE_INTERRUPT_LOCK
-    // Serialize interrupt handler to prevent SMP reentrancy issues
-    // Try to acquire lock (atomically change 0 -> 1)
-    if (!AtomicCompareExchange(&DevExt->InterruptLock, 1, 0)) {
-        // Another CPU is already in the interrupt handler
-#ifdef NVME2K_DBG
-        ScsiDebugPrint(0, "nvme2k: HwInterrupt - lock contention detected (another CPU is in ISR)\n");
-#endif
-        // Return FALSE to let ScsiPort try again
-        return FALSE;
-    }
-#endif
-
     // Process Admin Queue completions first
     if (NvmeProcessAdminCompletion(DevExt)) {
         interruptHandled = TRUE;
@@ -783,11 +770,6 @@ BOOLEAN HwInterrupt(IN PVOID DeviceExtension)
     if (NvmeProcessIoCompletion(DevExt)) {
         interruptHandled = TRUE;
     }
-
-#ifdef NVME2K_USE_INTERRUPT_LOCK
-    // Release lock (atomic write to ensure memory ordering)
-    AtomicSet(&DevExt->InterruptLock, 0);
-#endif
 
     return interruptHandled;
 }

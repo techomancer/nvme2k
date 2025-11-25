@@ -3,8 +3,7 @@
 // Resource file for NVMe Storage Controller Driver for Windows 2000
 //
 
-#include <windows.h>
-#include <ntverp.h>
+#include <winver.h>
 
 #define VER_FILETYPE                VFT_DRV
 #define VER_FILESUBTYPE             VFT2_DRV_SYSTEM

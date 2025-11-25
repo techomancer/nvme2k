@@ -11,7 +11,6 @@
 #include <devioctl.h>
 #include <ntddscsi.h>
 #include <ntdddisk.h>
-#include "atomic.h"
 #include "nvme.h"
 #include "scsiext.h"
 
@@ -25,13 +24,6 @@
  * it seems only level 0 messages are displayed, possibly registry changes are needed
  * #define NVME2K_DBG_STATS
  */
-
-//
-// Synchronization control - comment out to disable specific locks
-//
-//#define NVME2K_USE_INTERRUPT_LOCK       // Lock to serialize HwInterrupt on SMP
-//#define NVME2K_USE_SUBMISSION_LOCK      // Lock to serialize command submission
-//#define NVME2K_USE_COMPLETION_LOCK      // Lock to serialize completion processing
 
 //
 // Memory constants
@@ -99,8 +91,8 @@ typedef struct _NVME_QUEUE {
     USHORT QueueSize;
     UCHAR QueueSizeBits;         // log2(QueueSize), for phase calculation
     UCHAR Reserved;              // Padding for alignment
-    ATOMIC SubmissionLock;       // Spinlock for NvmeSubmitCommand (0 = unlocked, 1 = locked)
-    ATOMIC CompletionLock;       // Spinlock for completion processing (0 = unlocked, 1 = locked)
+    ULONG reserved1;
+    ULONG reserved2;
 } NVME_QUEUE, *PNVME_QUEUE;
 
 // Command ID encoding
@@ -179,9 +171,8 @@ typedef struct _HW_DEVICE_EXTENSION {
     BOOLEAN Busy;                                   // Offset 0xB6 (182)
     BOOLEAN InitComplete;                           // Offset 0xB7 (183)
 
-    // SMP synchronization for interrupt handler
-    ATOMIC InterruptLock;                           // Offset 0xB8 (184)
-    ULONG Reserved4;                                // Offset 0xBC (188)
+    ULONG Reserved4a;                               // Offset 0xB8 (184)
+    ULONG Reserved4b;                               // Offset 0xBC (188)
 
     // PRP list pages for scatter-gather (shared pool, allocated after init)
     // Note: During init, UtilityBuffer points to the same memory

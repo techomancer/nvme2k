@@ -154,18 +154,6 @@ BOOLEAN NvmeProcessAdminCompletion(IN PHW_DEVICE_EXTENSION DevExt)
     ULONG queueIndex;
     ULONG expectedPhase;
 
-#ifdef NVME2K_USE_COMPLETION_LOCK
-    // Acquire completion queue spinlock - protects against concurrent interrupt handler calls
-    if (!AtomicCompareExchange(&Queue->CompletionLock, 1, 0)) {
-#ifdef NVME2K_DBG
-        ScsiDebugPrint(0, "nvme2k: NvmeProcessAdminCompletion - lock contention on QID=%d (spinning)\n", Queue->QueueId);
-#endif
-        while (!AtomicCompareExchange(&Queue->CompletionLock, 1, 0)) {
-            // Spin waiting for lock
-        }
-    }
-#endif
-
     while (TRUE) {
         // Calculate queue index from current head
         queueIndex = Queue->CompletionQueueHead & Queue->QueueSizeMask;
@@ -351,11 +339,6 @@ BOOLEAN NvmeProcessAdminCompletion(IN PHW_DEVICE_EXTENSION DevExt)
         NvmeRingDoorbell(DevExt, Queue->QueueId, FALSE, (USHORT)(Queue->CompletionQueueHead & Queue->QueueSizeMask));
     }
 
-#ifdef NVME2K_USE_COMPLETION_LOCK
-    // Release completion queue spinlock
-    AtomicSet(&Queue->CompletionLock, 0);
-#endif
-
     return processed;
 }
 
@@ -376,18 +359,6 @@ BOOLEAN NvmeProcessIoCompletion(IN PHW_DEVICE_EXTENSION DevExt)
 #ifdef NVME2K_DBG_EXTRA
     if (DevExt->TotalRequests) {
         ScsiDebugPrint(0, "nvme2k: NvmeProcessIoCompletion called\n");
-    }
-#endif
-
-#ifdef NVME2K_USE_COMPLETION_LOCK
-    // Acquire completion queue spinlock - protects against concurrent interrupt handler calls
-    if (!AtomicCompareExchange(&Queue->CompletionLock, 1, 0)) {
-#ifdef NVME2K_DBG
-        ScsiDebugPrint(0, "nvme2k: NvmeProcessIoCompletion - lock contention on QID=%d (spinning)\n", Queue->QueueId);
-#endif
-        while (!AtomicCompareExchange(&Queue->CompletionLock, 1, 0)) {
-            // Spin waiting for lock
-        }
     }
 #endif
 
@@ -560,11 +531,6 @@ BOOLEAN NvmeProcessIoCompletion(IN PHW_DEVICE_EXTENSION DevExt)
     if (processed) {
         NvmeRingDoorbell(DevExt, Queue->QueueId, FALSE, (USHORT)(Queue->CompletionQueueHead & Queue->QueueSizeMask));
     }
-
-#ifdef NVME2K_USE_COMPLETION_LOCK
-    // Release completion queue spinlock
-    AtomicSet(&Queue->CompletionLock, 0);
-#endif
 
     return processed;
 }
