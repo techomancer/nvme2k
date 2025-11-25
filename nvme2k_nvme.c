@@ -1196,6 +1196,7 @@ BOOLEAN NvmeInitializeController(IN PHW_DEVICE_EXTENSION DevExt)
     // Start the initialization sequence
     DevExt->InitComplete = FALSE;
     DevExt->FallbackTimerNeeded = 1;
+    DevExt->InterruptCount = 0;
     NvmeCreateIoCQ(DevExt);
 
     // POLL for init completion (interrupts are masked during init)

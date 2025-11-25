@@ -15,20 +15,20 @@ MSC_WARNING_LEVEL=/W3 /WX
 # Platform-specific source files
 !IF $(ALPHA)
 DRIVER_ALIGNMENT=0x2000
-SOURCES=nvme2k.c       \
-        nvme2k_cpl.c   \
-        nvme2k_nvme.c  \
-        nvme2k_scsi.c  \
-        utils.c        \
-        nvme2k.rc
+SOURCES=..\nvme2k.c       \
+        ..\nvme2k_cpl.c   \
+        ..\nvme2k_nvme.c  \
+        ..\nvme2k_scsi.c  \
+        ..\utils.c        \
+        ..\nvme2k.rc
 
 !ELSE
 DRIVER_ALIGNMENT=0x1000
-SOURCES=nvme2k.c       \
-        nvme2k_cpl.c   \
-        nvme2k_nvme.c  \
-        nvme2k_scsi.c  \
-        utils.c        \
-        nvme2k.rc
+SOURCES=..\nvme2k.c       \
+        ..\nvme2k_cpl.c   \
+        ..\nvme2k_nvme.c  \
+        ..\nvme2k_scsi.c  \
+        ..\utils.c        \
+        ..\nvme2k.rc
 !ENDIF
 

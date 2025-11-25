@@ -172,7 +172,7 @@ typedef struct _HW_DEVICE_EXTENSION {
     BOOLEAN InitComplete;                           // Offset 0xB7 (183)
 
     ULONG Reserved4a;                               // Offset 0xB8 (184)
-    ULONG Reserved4b;                               // Offset 0xBC (188)
+    ULONG InterruptCount;                           // Offset 0xBC (188)
 
     // PRP list pages for scatter-gather (shared pool, allocated after init)
     // Note: During init, UtilityBuffer points to the same memory

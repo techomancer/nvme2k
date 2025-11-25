@@ -202,7 +202,7 @@ ULONG HwFoundAdapter(
         }
     }
 
-#if (_WIN32_WINNT >= 0x500)
+#if (_WIN32_WINNT >= 0x500 && !defined(ALPHA))
     accessRange->RangeStart = ScsiPortConvertUlongToPhysicalAddress(ScsiPortConvertPhysicalAddressToULongPtr(bar0));
 #else
     accessRange->RangeStart = ScsiPortConvertUlongToPhysicalAddress(bar0.LowPart);
@@ -737,8 +737,8 @@ VOID FallbackTimer(IN PVOID DeviceExtension)
     PHW_DEVICE_EXTENSION DevExt = (PHW_DEVICE_EXTENSION)DeviceExtension;
 
     DevExt->FallbackTimerNeeded++;
-    if (!DevExt->FallbackTimerNeeded)
-        DevExt->FallbackTimerNeeded = 1;
+    if (!DevExt->FallbackTimerNeeded) // wraparound
+        DevExt->FallbackTimerNeeded = 2; // because 1 means fallbacktime didnt fire
 
     NvmeProcessAdminCompletion(DevExt);
     NvmeProcessIoCompletion(DevExt);
@@ -752,11 +752,12 @@ BOOLEAN HwInterrupt(IN PVOID DeviceExtension)
     PHW_DEVICE_EXTENSION DevExt = (PHW_DEVICE_EXTENSION)DeviceExtension;
     BOOLEAN interruptHandled = FALSE;
 
+    DevExt->InterruptCount++;
     if (DevExt->FallbackTimerNeeded) {
         // cancel the fallback timer
         ScsiPortNotification(RequestTimerCall, DeviceExtension, FallbackTimer, 0);
-        // interrupts worked a million times, we probably dont need a fallback
-        if (DevExt->FallbackTimerNeeded >= 1000000) {
+        // interrupts worked a million times, and callback didnt fire we probably dont need a fallback
+        if (DevExt->InterruptCount >= 1000000 && DevExt->FallbackTimerNeeded == 1) {
             DevExt->FallbackTimerNeeded = 0;
         }
     }   
