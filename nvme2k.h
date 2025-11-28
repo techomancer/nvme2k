@@ -14,7 +14,7 @@
 #include "nvme.h"
 #include "scsiext.h"
 
-//#define NVME2K_DBG
+#define NVME2K_DBG
 // extra spammy logging for NVMe commands
 //#define NVME2K_DBG_CMD
 //#define NVME2K_DBG_EXTRA
@@ -26,10 +26,11 @@
  */
 
 //
-// Memory constants
+// We only use 4K pages even if drive supports more
 //
-#define PAGE_SIZE                           0x1000  // 4KB page size
-#define PAGE_SHIFT                          12      // log2(PAGE_SIZE)
+#define NVME_PAGE_SIZE                      0x1000  // 4KB page size
+#define NVME_PAGE_MASK                      (NVME_PAGE_SIZE-1)
+#define NVME_PAGE_SHIFT                     12      // log2(NVME_PAGE_SIZE)
 
 //
 // NVMe PCI Class Codes
@@ -72,7 +73,7 @@
 //
 // Queue sizes and scatter-gather limits
 //
-#define NVME_MAX_QUEUE_SIZE     (PAGE_SIZE/NVME_SQ_ENTRY_SIZE)  // Maximum we can fit in a page (64)
+#define NVME_MAX_QUEUE_SIZE     (NVME_PAGE_SIZE/NVME_SQ_ENTRY_SIZE)  // Maximum we can fit in a page (64)
                                                                  // Actual size determined by min(NVME_MAX_QUEUE_SIZE, MQES+1)
 //
 // NVMe Queue Pair
@@ -154,7 +155,7 @@ typedef struct _HW_DEVICE_EXTENSION {
     // NVMe specific fields
     ULONGLONG ControllerCapabilities;               // Offset 0x28 (40) [8-byte aligned]
     ULONG Version;                                  // Offset 0x30 (48)
-    ULONG PageSize;                                 // Offset 0x34 (52)
+    ULONG Reserved1;                                // Offset 0x34 (52)
     ULONG DoorbellStride;                           // Offset 0x38 (56)
     USHORT MaxQueueEntries;                         // Offset 0x3C (60)
     USHORT SgListPages;                             // Offset 0x3E (62)
@@ -245,7 +246,7 @@ SCSI_ADAPTER_CONTROL_STATUS HwAdapterControl(IN PVOID DeviceExtension,
                                               IN SCSI_ADAPTER_CONTROL_TYPE ControlType,
                                               IN PVOID Parameters);
 #else
-VOID HwAdapterState(
+BOOLEAN HwAdapterState(
     IN PVOID DeviceExtension,
     IN PVOID Context,
     IN BOOLEAN SaveState);

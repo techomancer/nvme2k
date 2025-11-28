@@ -32,7 +32,7 @@ VOID NvmeProcessGetLogPageCompletion(IN PHW_DEVICE_EXTENSION DevExt, IN USHORT s
             ScsiDebugPrint(0, "nvme2k: THIS IS BAD\n");
         }
 #endif
-        prpBuffer = (PVOID)((PUCHAR)DevExt->PrpListPages + (prpPageIndex * PAGE_SIZE));
+        prpBuffer = (PVOID)((PUCHAR)DevExt->PrpListPages + (prpPageIndex << NVME_PAGE_SHIFT));
 
         // Determine the request type: LOG SENSE, SAT PASS-THROUGH, or SMART IOCTL
         if (Srb->Function == SRB_FUNCTION_EXECUTE_SCSI && Srb->Cdb[0] == SCSIOP_LOG_SENSE) {
@@ -104,7 +104,7 @@ VOID NvmeProcessGetLogPageCompletion(IN PHW_DEVICE_EXTENSION DevExt, IN USHORT s
                 Srb->DataTransferLength = 0;
                 Srb->SrbStatus = SRB_STATUS_ERROR;
             } else
-            if (RtlCompareMemory(srbControl->Signature, "SCSIDISK", 8) == 8
+            if (memcmp(srbControl->Signature, "SCSIDISK", 8) == 0
                 && srbControl->ControlCode == IOCTL_SCSI_MINIPORT_READ_SMART_ATTRIBS) {
                     PNVME_SMART_INFO nvmeSmart = (PNVME_SMART_INFO)prpBuffer;
                     PATA_SMART_DATA ataSmart = (PATA_SMART_DATA)sendCmdOut->bBuffer;
@@ -113,7 +113,7 @@ VOID NvmeProcessGetLogPageCompletion(IN PHW_DEVICE_EXTENSION DevExt, IN USHORT s
                     NvmeSmartToAtaSmart(nvmeSmart, ataSmart);
 
                     sendCmdOut->cBufferSize = 512;
-                    RtlZeroMemory(&sendCmdOut->DriverStatus, sizeof(DRIVERSTATUS));
+                    memset(&sendCmdOut->DriverStatus, 0, sizeof(DRIVERSTATUS));
                     sendCmdOut->DriverStatus.bDriverError = 0;
                     sendCmdOut->DriverStatus.bIDEError = 0;
 
@@ -223,13 +223,13 @@ BOOLEAN NvmeProcessAdminCompletion(IN PHW_DEVICE_EXTENSION DevExt)
                         ULONG driverMaxTransfer;
 
                         // Copy and null-terminate strings
-                        RtlCopyMemory(DevExt->ControllerSerialNumber, ctrlData->SerialNumber, 20);
+                        memcpy(DevExt->ControllerSerialNumber, ctrlData->SerialNumber, 20);
                         DevExt->ControllerSerialNumber[20] = 0;
 
-                        RtlCopyMemory(DevExt->ControllerModelNumber, ctrlData->ModelNumber, 40);
+                        memcpy(DevExt->ControllerModelNumber, ctrlData->ModelNumber, 40);
                         DevExt->ControllerModelNumber[40] = 0;
 
-                        RtlCopyMemory(DevExt->ControllerFirmwareRevision, ctrlData->FirmwareRevision, 8);
+                        memcpy(DevExt->ControllerFirmwareRevision, ctrlData->FirmwareRevision, 8);
                         DevExt->ControllerFirmwareRevision[8] = 0;
 
                         DevExt->NumberOfNamespaces = ctrlData->NumberOfNamespaces;
@@ -242,14 +242,14 @@ BOOLEAN NvmeProcessAdminCompletion(IN PHW_DEVICE_EXTENSION DevExt)
                         DevExt->MaxDataTransferSizePower = ctrlData->MaxDataTransferSize;
 
                         // Driver maximum: One PRP list page with 512 entries * 4KB per entry = 2MB
-                        driverMaxTransfer = 512 * PAGE_SIZE;
+                        driverMaxTransfer = 512 << NVME_PAGE_SHIFT;
 
                         if (DevExt->MaxDataTransferSizePower == 0) {
                             // No controller-imposed limit
                             DevExt->MaxTransferSizeBytes = driverMaxTransfer;
                         } else {
                             // Calculate: 2^MDTS * PageSize (PageSize = 4KB)
-                            DevExt->MaxTransferSizeBytes = (1UL << DevExt->MaxDataTransferSizePower) * PAGE_SIZE;
+                            DevExt->MaxTransferSizeBytes = (1UL << (DevExt->MaxDataTransferSizePower + NVME_PAGE_SHIFT));
 
                             // Clamp to driver maximum
                             if (DevExt->MaxTransferSizeBytes > driverMaxTransfer) {
@@ -267,7 +267,7 @@ BOOLEAN NvmeProcessAdminCompletion(IN PHW_DEVICE_EXTENSION DevExt)
                         } else {
                             ScsiDebugPrint(0, "nvme2k: MDTS=%u (%u bytes), final max transfer = %u bytes\n",
                                         DevExt->MaxDataTransferSizePower,
-                                        (1UL << DevExt->MaxDataTransferSizePower) * PAGE_SIZE,
+                                        (1UL << DevExt->MaxDataTransferSizePower) * NVME_PAGE_SIZE,
                                         DevExt->MaxTransferSizeBytes);
                         }
 #endif
@@ -467,12 +467,12 @@ BOOLEAN NvmeProcessIoCompletion(IN PHW_DEVICE_EXTENSION DevExt)
                 if (isWrite && Srb->DataBuffer) {
                     PUCHAR dataBuffer = (PUCHAR)Srb->DataBuffer;
                     // Compare bytes 16-4095 with TrimPattern offset by 4 ULONGs (16 bytes)
-                    if (RtlCompareMemory(dataBuffer + 16, (PUCHAR)DevExt->TrimPattern + 16, 4096 - 16) == (4096 - 16)) {
+                    if (memcmp(dataBuffer + 16, (PUCHAR)DevExt->TrimPattern + 16, 4096 - 16) == 0) {
                         // This was a TRIM operation - restore the first 16 bytes from TrimPattern
 #ifdef NVME2K_DBG_EXTRA
                         ScsiDebugPrint(0, "nvme2k: Restoring first 16 bytes of TRIM buffer\n");
 #endif
-                        RtlCopyMemory(dataBuffer, DevExt->TrimPattern, 16);
+                        memcpy(dataBuffer, DevExt->TrimPattern, 16);
                     }
                 }
             }
@@ -492,7 +492,7 @@ BOOLEAN NvmeProcessIoCompletion(IN PHW_DEVICE_EXTENSION DevExt)
                 // Fill in sense data if buffer is available
                 if (Srb->SenseInfoBuffer && Srb->SenseInfoBufferLength >= 18) {
                     PUCHAR sense = (PUCHAR)Srb->SenseInfoBuffer;
-                    RtlZeroMemory(sense, Srb->SenseInfoBufferLength);
+                    memset(sense, 0, Srb->SenseInfoBufferLength);
 
                     // Build standard SCSI sense data
                     sense[0] = 0x70;  // Error code: Current error

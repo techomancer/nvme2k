@@ -8,6 +8,8 @@ Class=SCSIAdapter
 ClassGUID={4D36E97B-E325-11CE-BFC1-08002BE10318}
 Provider=%ProviderString%
 DriverVer=11/21/2025,1.0.0.3
+CatalogFile = NVMe2K.cat
+PnpLockdown = 1
 
 [DestinationDirs]
 DefaultDestDir = 12  ; DIRID_DRIVERS

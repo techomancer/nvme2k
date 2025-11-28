@@ -6,23 +6,6 @@
 #include "utils.h"
 
 //
-// RtlCompareMemory - Compare two memory blocks, return number of matching bytes
-//
-ULONG RtlCompareMemory(IN CONST VOID *Source1, IN CONST VOID *Source2, IN ULONG Length)
-{
-    PUCHAR s1 = (PUCHAR)Source1;
-    PUCHAR s2 = (PUCHAR)Source2;
-    ULONG i;
-
-    for (i = 0; i < Length; i++) {
-        if (s1[i] != s2[i]) {
-            return i;
-        }
-    }
-    return Length;
-}
-
-//
 // NvmeSmartToAtaSmart - Convert NVMe SMART/Health log to ATA SMART format
 // Alpha-safe: All field accesses are byte-aligned
 //
@@ -37,7 +20,7 @@ VOID NvmeSmartToAtaSmart(IN PNVME_SMART_INFO NvmeSmart, OUT PATA_SMART_DATA AtaS
     attrIndex = 0;
 
     /* Zero out the entire structure */
-    RtlZeroMemory(AtaSmart, sizeof(ATA_SMART_DATA));
+    memset(AtaSmart, 0, sizeof(ATA_SMART_DATA));
 
     /* Set version */
     WRITE_USHORT(AtaSmart->Version, 0x0010);  /* SMART version 1.0 */
@@ -50,7 +33,7 @@ VOID NvmeSmartToAtaSmart(IN PNVME_SMART_INFO NvmeSmart, OUT PATA_SMART_DATA AtaS
         AtaSmart->Attributes[attrIndex].CurrentValue = (current); \
         AtaSmart->Attributes[attrIndex].WorstValue = (worst); \
         /* Copy lower 6 bytes of the 64-bit raw value */ \
-        RtlCopyMemory(AtaSmart->Attributes[attrIndex].RawValue, &(raw64), 6); \
+        memcpy(AtaSmart->Attributes[attrIndex].RawValue, &(raw64), 6); \
         attrIndex++; \
     }
 
@@ -208,7 +191,7 @@ BOOLEAN NvmeLogPageToScsiLogPage(
     }
 
     // Clear the buffer
-    RtlZeroMemory(ScsiLogBuffer, BufferSize);
+    memset(ScsiLogBuffer, 0, BufferSize);
 
     // Build SCSI log page header
     pageHeader = (PSCSI_LOG_PAGE_HEADER)buffer;
@@ -279,7 +262,7 @@ BOOLEAN NvmeLogPageToScsiLogPage(
             offset += sizeof(SCSI_LOG_PARAMETER);
 
             // Copy first 8 bytes of power on hours (little-endian in NVMe)
-            RtlCopyMemory(buffer + offset, NvmeSmart->PowerOnHours, 8);
+            memcpy(buffer + offset, NvmeSmart->PowerOnHours, 8);
             offset += 8;
         }
 
@@ -292,7 +275,7 @@ BOOLEAN NvmeLogPageToScsiLogPage(
             param->ParameterLength = 8;
             offset += sizeof(SCSI_LOG_PARAMETER);
 
-            RtlCopyMemory(buffer + offset, NvmeSmart->DataUnitsRead, 8);
+            memcpy(buffer + offset, NvmeSmart->DataUnitsRead, 8);
             offset += 8;
         }
 
@@ -305,7 +288,7 @@ BOOLEAN NvmeLogPageToScsiLogPage(
             param->ParameterLength = 8;
             offset += sizeof(SCSI_LOG_PARAMETER);
 
-            RtlCopyMemory(buffer + offset, NvmeSmart->DataUnitsWritten, 8);
+            memcpy(buffer + offset, NvmeSmart->DataUnitsWritten, 8);
             offset += 8;
         }
 
@@ -318,7 +301,7 @@ BOOLEAN NvmeLogPageToScsiLogPage(
             param->ParameterLength = 8;
             offset += sizeof(SCSI_LOG_PARAMETER);
 
-            RtlCopyMemory(buffer + offset, NvmeSmart->MediaErrors, 8);
+            memcpy(buffer + offset, NvmeSmart->MediaErrors, 8);
             offset += 8;
         }
     } else {
@@ -438,7 +421,7 @@ VOID NvmeToAtaIdentify(
     ULONG cylinders, heads, sectors;
 
     // Zero out the entire structure
-    RtlZeroMemory(AtaIdentify, sizeof(ATA_IDENTIFY_DEVICE_STRUCT));
+    memset(AtaIdentify, 0, sizeof(ATA_IDENTIFY_DEVICE_STRUCT));
 
     // Word 0: General configuration
     // Bit 15: 0=ATA device, Bit 7: Removable=0, Bit 6: Fixed=1
@@ -470,7 +453,7 @@ VOID NvmeToAtaIdentify(
     // Words 10-19: Serial number (20 bytes, ASCII, byte-swapped pairs)
     {
         UCHAR serial[20];
-        RtlZeroMemory(serial, 20);
+        memset(serial, 0, 20);
         for (i = 0; i < 20 && i < sizeof(DevExt->ControllerSerialNumber); i++) {
             serial[i] = DevExt->ControllerSerialNumber[i];
         }
@@ -488,7 +471,7 @@ VOID NvmeToAtaIdentify(
     // Words 23-26: Firmware revision (8 bytes, ASCII, byte-swapped)
     {
         UCHAR firmware[8];
-        RtlZeroMemory(firmware, 8);
+        memset(firmware, 0, 8);
         for (i = 0; i < 8 && i < sizeof(DevExt->ControllerFirmwareRevision); i++) {
             firmware[i] = DevExt->ControllerFirmwareRevision[i];
         }
@@ -506,7 +489,7 @@ VOID NvmeToAtaIdentify(
     // Words 27-46: Model number (40 bytes, ASCII, byte-swapped)
     {
         UCHAR model[40];
-        RtlZeroMemory(model, 40);
+        memset(model, 0, 40);
         for (i = 0; i < 40 && i < sizeof(DevExt->ControllerModelNumber); i++) {
             model[i] = DevExt->ControllerModelNumber[i];
         }
@@ -522,7 +505,7 @@ VOID NvmeToAtaIdentify(
     }
 
     // Word 47: Maximum sectors per interrupt
-    WRITE_USHORT(AtaIdentify->MaxMultipleSectors, 0x8010);  // Max 16 sectors
+    WRITE_USHORT(AtaIdentify->MaximumBlockTransfer, 0x8000 | (USHORT)(DevExt->MaxTransferSizeBytes >> 9));
 
     // Word 49: Capabilities - Bit 9: LBA supported, Bit 8: DMA supported
     WRITE_USHORT(AtaIdentify->Capabilities, 0x0300);
@@ -546,7 +529,7 @@ VOID NvmeToAtaIdentify(
     }
 
     // Word 59: Multiple sector setting
-    WRITE_USHORT(AtaIdentify->MultipleSectorSetting, 0x0110);
+    WRITE_USHORT(AtaIdentify->MultipleSectorSetting, 0x0000); // only valid if SET MULTIPLE has been issued
 
     // Word 60-61: Total addressable sectors (LBA-28)
     {
@@ -696,7 +679,7 @@ PVOID GetPrpListPageVirtual(IN PHW_DEVICE_EXTENSION DevExt, IN UCHAR pageIndex)
     if (pageIndex >= DevExt->SgListPages) {
         return NULL;
     }
-    return (PVOID)((PUCHAR)DevExt->PrpListPages + (pageIndex * PAGE_SIZE));
+    return (PVOID)((PUCHAR)DevExt->PrpListPages + (pageIndex << NVME_PAGE_SHIFT));
 }
 
 //
@@ -711,7 +694,7 @@ PHYSICAL_ADDRESS GetPrpListPagePhysical(IN PHW_DEVICE_EXTENSION DevExt, IN UCHAR
         return addr;
     }
 
-    addr.QuadPart = DevExt->PrpListPagesPhys.QuadPart + (pageIndex * PAGE_SIZE);
+    addr.QuadPart = DevExt->PrpListPagesPhys.QuadPart + (pageIndex << NVME_PAGE_SHIFT);
     return addr;
 }
 

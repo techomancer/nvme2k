@@ -303,7 +303,7 @@ typedef struct _ATA_IDENTIFY_DEVICE_STRUCT {
     UCHAR Reserved4[6];                  // Word 20-22: Retired
     UCHAR FirmwareRevision[8];           // Word 23-26: Firmware revision (ASCII, padded with spaces)
     UCHAR ModelNumber[40];               // Word 27-46: Model number (ASCII, padded with spaces)
-    UCHAR MaxMultipleSectors[2];         // Word 47: Maximum sectors per interrupt
+    UCHAR MaximumBlockTransfer[2];       // Word 47: Maximum sectors per interrupt
     UCHAR Reserved5[2];                  // Word 48: Trusted Computing
     UCHAR Capabilities[4];               // Word 49-50: Capabilities (LBA, DMA, etc.)
     UCHAR Reserved6[4];                  // Word 51-52: Obsolete

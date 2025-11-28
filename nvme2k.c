@@ -23,7 +23,7 @@ ULONG DriverEntry(IN PVOID DriverObject, IN PVOID Argument2)
 #endif
 
     // Zero out the initialization data structure
-    RtlZeroMemory(&hwInitData, sizeof(HW_INITIALIZATION_DATA));
+    memset(&hwInitData, 0, sizeof(HW_INITIALIZATION_DATA));
 
     // Set size of structure
     hwInitData.HwInitializationDataSize = sizeof(HW_INITIALIZATION_DATA);
@@ -151,7 +151,7 @@ ULONG HwFoundAdapter(
     // NT4 may require this to be explicitly set for resource translation
     ConfigInfo->NumberOfAccessRanges = 1;
 
-    ConfigInfo->MaximumTransferLength = 32 * PAGE_SIZE;  // safe default
+    ConfigInfo->MaximumTransferLength = 32u << NVME_PAGE_SHIFT;  // safe default
     ConfigInfo->NumberOfBuses = 1;
     ConfigInfo->ScatterGather = TRUE;
     ConfigInfo->Master = TRUE;
@@ -297,7 +297,7 @@ ULONG HwFoundAdapter(
 
     // Allocate uncached memory block
     DevExt->SgListPages = 32;
-    DevExt->UncachedExtensionSize = (PAGE_SIZE * (DevExt->SgListPages + 4 + 1));
+    DevExt->UncachedExtensionSize = (NVME_PAGE_SIZE * (DevExt->SgListPages + 4 + 1));
 
     DevExt->UncachedExtensionBase = ScsiPortGetUncachedExtension(
         (PVOID)DevExt,
@@ -306,7 +306,7 @@ ULONG HwFoundAdapter(
 
     if (DevExt->UncachedExtensionBase == NULL) {
         DevExt->SgListPages = 16;
-        DevExt->UncachedExtensionSize = (PAGE_SIZE * (DevExt->SgListPages + 4 + 1));
+        DevExt->UncachedExtensionSize = (NVME_PAGE_SIZE * (DevExt->SgListPages + 4 + 1));
 
         DevExt->UncachedExtensionBase = ScsiPortGetUncachedExtension(
             (PVOID)DevExt,
@@ -330,7 +330,7 @@ ULONG HwFoundAdapter(
         &tempSize);
     
     // Zero out the entire uncached memory
-    RtlZeroMemory(DevExt->UncachedExtensionBase, DevExt->UncachedExtensionSize);
+    memset(DevExt->UncachedExtensionBase, 0, DevExt->UncachedExtensionSize);
 
     // Initialize allocator
     DevExt->UncachedExtensionOffset = 0;
@@ -362,8 +362,8 @@ ULONG HwFoundAdapter(
 
     // We need to update some of the config info now from the data we got from the controller.
     ConfigInfo->MaximumTransferLength = DevExt->MaxTransferSizeBytes;
-    if (((ConfigInfo->MaximumTransferLength >> PAGE_SHIFT) - 1) < ConfigInfo->NumberOfPhysicalBreaks)
-        ConfigInfo->NumberOfPhysicalBreaks = (ConfigInfo->MaximumTransferLength >> PAGE_SHIFT) - 1;
+    if (((ConfigInfo->MaximumTransferLength >> NVME_PAGE_SHIFT) - 1) < ConfigInfo->NumberOfPhysicalBreaks)
+        ConfigInfo->NumberOfPhysicalBreaks = (ConfigInfo->MaximumTransferLength >> NVME_PAGE_SHIFT) - 1;
 
     return SP_RETURN_FOUND;
 }
@@ -549,7 +549,7 @@ BOOLEAN HwStartIo(IN PVOID DeviceExtension, IN PSCSI_REQUEST_BLOCK Srb)
                 // Fill in sense data if AutoRequestSense is enabled and buffer is available
                 if (Srb->SenseInfoBuffer != NULL && Srb->SenseInfoBufferLength >= sizeof(SENSE_DATA)) {
                     senseBuffer = (PSENSE_DATA)Srb->SenseInfoBuffer;
-                    RtlZeroMemory(senseBuffer, sizeof(SENSE_DATA));
+                    memset(senseBuffer, 0, sizeof(SENSE_DATA));
 
                     senseBuffer->ErrorCode = 0x70;  // Current error, fixed format
                     senseBuffer->Valid = 0;
@@ -852,7 +852,7 @@ SCSI_ADAPTER_CONTROL_STATUS HwAdapterControl(
 //
 // HwAdapterState - Handle adapter state changes (Windows NT 4)
 //
-VOID HwAdapterState(
+BOOLEAN HwAdapterState(
     IN PVOID DeviceExtension,
     IN PVOID Context,
     IN BOOLEAN SaveState)
@@ -876,8 +876,9 @@ VOID HwAdapterState(
         ScsiDebugPrint(0, "nvme2k: HwAdapterState - restoring state\n");
 #endif
         // Reinitialize the controller
-        HwInitialize(DevExt);
+        return HwInitialize(DevExt);
     }
+    return TRUE;
 }
 #endif
  

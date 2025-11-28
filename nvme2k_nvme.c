@@ -101,7 +101,7 @@ static BOOLEAN NvmeSubmitCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PNVME_QUEUE 
                               (Queue->SubmissionQueueTail * NVME_SQ_ENTRY_SIZE));
 
     // Copy command to queue
-    RtlCopyMemory(sqEntry, Cmd, sizeof(NVME_COMMAND));
+    memcpy(sqEntry, Cmd, sizeof(NVME_COMMAND));
 
 #ifdef NVME2K_DBG_CMD
     // Dump the command for debugging
@@ -161,7 +161,7 @@ BOOLEAN NvmeCreateIoCQ(IN PHW_DEVICE_EXTENSION DevExt)
 {
     NVME_COMMAND cmd;
 
-    RtlZeroMemory(&cmd, sizeof(NVME_COMMAND));
+    memset(&cmd, 0, sizeof(NVME_COMMAND));
 
     cmd.CDW0.Fields.Opcode = NVME_ADMIN_CREATE_CQ;
     cmd.CDW0.Fields.Flags = 0;
@@ -178,7 +178,7 @@ BOOLEAN NvmeCreateIoSQ(IN PHW_DEVICE_EXTENSION DevExt)
 {
     NVME_COMMAND cmd;
 
-    RtlZeroMemory(&cmd, sizeof(NVME_COMMAND));
+    memset(&cmd, 0, sizeof(NVME_COMMAND));
 
     cmd.CDW0.Fields.Opcode = NVME_ADMIN_CREATE_SQ;
     cmd.CDW0.Fields.Flags = 0;
@@ -197,7 +197,7 @@ BOOLEAN NvmeIdentifyController(IN PHW_DEVICE_EXTENSION DevExt)
 {
     NVME_COMMAND cmd;
 
-    RtlZeroMemory(&cmd, sizeof(NVME_COMMAND));
+    memset(&cmd, 0, sizeof(NVME_COMMAND));
 
     // Build Identify Controller command
     cmd.CDW0.Fields.Opcode = NVME_ADMIN_IDENTIFY;
@@ -224,7 +224,7 @@ BOOLEAN NvmeIdentifyNamespace(IN PHW_DEVICE_EXTENSION DevExt)
 {
     NVME_COMMAND cmd;
 
-    RtlZeroMemory(&cmd, sizeof(NVME_COMMAND));
+    memset(&cmd, 0, sizeof(NVME_COMMAND));
 
     // Build Identify Namespace command
     cmd.CDW0.Fields.Opcode = NVME_ADMIN_IDENTIFY;
@@ -269,11 +269,11 @@ BOOLEAN NvmeGetLogPage(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Sr
 
     // Zero out the page to prevent stale data issues
     prpPageVirt = GetPrpListPageVirtual(DevExt, prpPageIndex);
-    RtlZeroMemory(prpPageVirt, PAGE_SIZE);
+    memset(prpPageVirt, 0, NVME_PAGE_SIZE);
 
     // Get physical address of the PRP buffer
     physAddr = DevExt->PrpListPagesPhys;
-    physAddr.QuadPart += (prpPageIndex * PAGE_SIZE);
+    physAddr.QuadPart += (prpPageIndex << NVME_PAGE_SHIFT);
 
     // Store PRP page index in SRB extension so we can free it on completion
     if (!Srb->SrbExtension) {
@@ -290,7 +290,7 @@ BOOLEAN NvmeGetLogPage(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Sr
     // Calculate NUMDL (number of dwords - 1) for 512 bytes (SMART log size)
     numdl = (512 / 4) - 1;
 
-    RtlZeroMemory(&cmd, sizeof(NVME_COMMAND));
+    memset(&cmd, 0, sizeof(NVME_COMMAND));
 
     cmd.CDW0.Fields.Opcode = NVME_ADMIN_GET_LOG_PAGE;
     cmd.CDW0.Fields.CommandId = (ADMIN_CID_GET_LOG_PAGE + prpPageIndex) | CID_NON_TAGGED_FLAG;
@@ -520,7 +520,7 @@ int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_B
     // Check for TRIM mode: if writing and TRIM is enabled, compare first 4KB with pattern
     if (isWrite && DevExt->TrimEnable && Srb->DataTransferLength >= 4096) {
         // Compare first 4KB of DataBuffer with TrimPattern
-        if (RtlCompareMemory(Srb->DataBuffer, DevExt->TrimPattern, 4096) == 4096) {
+        if (memcmp(Srb->DataBuffer, DevExt->TrimPattern, 4096) == 0) {
             // Match! Convert to TRIM/UNMAP (Dataset Management) command
 #ifdef NVME2K_DBG_EXTRA
             ScsiDebugPrint(0, "nvme2k: TRIM pattern detected at LBA %08X%08X, blocks=%u - converting to DSM\n",
@@ -599,10 +599,10 @@ int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_B
     Cmd->PRP1 = physAddr.QuadPart;
 
     // Calculate offset within the page
-    offsetInPage = (ULONG)(physAddr.QuadPart & (PAGE_SIZE - 1));
+    offsetInPage = (ULONG)(physAddr.QuadPart & NVME_PAGE_MASK);
 
     // Calculate how many bytes fit in the first page
-    firstPageBytes = PAGE_SIZE - offsetInPage;
+    firstPageBytes = NVME_PAGE_SIZE - offsetInPage;
 
     // Determine if we need PRP2 or a PRP list
     if (Srb->DataTransferLength <= firstPageBytes) {
@@ -611,7 +611,7 @@ int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_B
 #ifdef NVME2K_DBG_CMD
         ScsiDebugPrint(0, "nvme2k: NvmeBuildReadWriteCommand - Single page transfer, PRP2=0\n");
 #endif
-    } else if (Srb->DataTransferLength <= (firstPageBytes + PAGE_SIZE)) {
+    } else if (Srb->DataTransferLength <= (firstPageBytes + NVME_PAGE_SIZE)) {
         // Transfer spans exactly 2 pages, use PRP2 directly
         currentPageVirtual = (PVOID)((PUCHAR)Srb->DataBuffer + firstPageBytes);
         length = Srb->DataTransferLength - firstPageBytes;
@@ -655,12 +655,12 @@ int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_B
             prpList[prpIndex] = physAddr2.QuadPart;
             prpIndex++;
 
-            if (remainingBytes <= PAGE_SIZE) {
+            if (remainingBytes <= NVME_PAGE_SIZE) {
                 break;
             }
 
-            remainingBytes -= PAGE_SIZE;
-            currentOffset += PAGE_SIZE;
+            remainingBytes -= NVME_PAGE_SIZE;
+            currentOffset += NVME_PAGE_SIZE;
         }
 
         numPrpEntries = prpIndex;
@@ -715,7 +715,7 @@ VOID NvmeShutdownController(IN PHW_DEVICE_EXTENSION DevExt)
     if (DevExt->InitComplete && DevExt->IoQueue.SubmissionQueue != NULL) {
         NVME_COMMAND cmd;
 
-        RtlZeroMemory(&cmd, sizeof(NVME_COMMAND));
+        memset(&cmd, 0, sizeof(NVME_COMMAND));
         cmd.CDW0.Fields.Opcode = NVME_ADMIN_DELETE_SQ;
         cmd.CDW0.Fields.CommandId = ADMIN_CID_SHUTDOWN_DELETE_SQ;
         cmd.CDW10 = 1;  // QID = 1 (I/O queue)
@@ -741,7 +741,7 @@ VOID NvmeShutdownController(IN PHW_DEVICE_EXTENSION DevExt)
     if (DevExt->InitComplete && DevExt->IoQueue.CompletionQueue != NULL) {
         NVME_COMMAND cmd;
 
-        RtlZeroMemory(&cmd, sizeof(NVME_COMMAND));
+        memset(&cmd, 0, sizeof(NVME_COMMAND));
         cmd.CDW0.Fields.Opcode = NVME_ADMIN_DELETE_CQ;
         cmd.CDW0.Fields.CommandId = ADMIN_CID_SHUTDOWN_DELETE_CQ;
         cmd.CDW10 = 1;  // QID = 1 (I/O queue)
@@ -978,7 +978,6 @@ BOOLEAN NvmeSanitizeController(IN PHW_DEVICE_EXTENSION DevExt)
 BOOLEAN NvmeInitializeController(IN PHW_DEVICE_EXTENSION DevExt)
 {
     ULONG cc, aqa;
-    ULONG pageShift;
 
 #ifdef NVME2K_DBG
     ScsiDebugPrint(0, "nvme2k: NvmeInitializeController called\n");
@@ -994,9 +993,6 @@ BOOLEAN NvmeInitializeController(IN PHW_DEVICE_EXTENSION DevExt)
 
     // Calculate doorbell stride (in bytes)
     DevExt->DoorbellStride = 4 << (((ULONG)(DevExt->ControllerCapabilities >> 32) & 0xF));
-
-    // Determine page size (4KB minimum for this driver)
-    DevExt->PageSize = PAGE_SIZE; // Hardcoded to 4KB
 
 #ifdef NVME2K_DBG
     ScsiDebugPrint(0, "nvme2k: NvmeInitializeController - CAP=%08X%08X VS=%08X MQES=%u DBS=%u\n",
@@ -1019,7 +1015,7 @@ BOOLEAN NvmeInitializeController(IN PHW_DEVICE_EXTENSION DevExt)
         // 1. Allocate Admin SQ (4KB aligned)
         DevExt->AdminQueue.QueueSize = queueSize;
         DevExt->AdminQueue.QueueId = 0;
-        if (!AllocateUncachedMemory(DevExt, queueSize * NVME_SQ_ENTRY_SIZE, PAGE_SIZE,
+        if (!AllocateUncachedMemory(DevExt, queueSize * NVME_SQ_ENTRY_SIZE, NVME_PAGE_SIZE,
                                     &DevExt->AdminQueue.SubmissionQueue,
                                     &DevExt->AdminQueue.SubmissionQueuePhys)) {
 #ifdef NVME2K_DBG
@@ -1031,7 +1027,7 @@ BOOLEAN NvmeInitializeController(IN PHW_DEVICE_EXTENSION DevExt)
         // 2. Allocate I/O SQ (4KB aligned)
         DevExt->IoQueue.QueueSize = queueSize;
         DevExt->IoQueue.QueueId = 1;
-        if (!AllocateUncachedMemory(DevExt, queueSize * NVME_SQ_ENTRY_SIZE, PAGE_SIZE,
+        if (!AllocateUncachedMemory(DevExt, queueSize * NVME_SQ_ENTRY_SIZE, NVME_PAGE_SIZE,
                                     &DevExt->IoQueue.SubmissionQueue,
                                     &DevExt->IoQueue.SubmissionQueuePhys)) {
 #ifdef NVME2K_DBG
@@ -1043,7 +1039,7 @@ BOOLEAN NvmeInitializeController(IN PHW_DEVICE_EXTENSION DevExt)
         // 3. Allocate utility buffer (large enough for SgListPages * 4KB)
         // During init: used for Identify commands
         // After init: repurposed as PRP list page pool
-        if (!AllocateUncachedMemory(DevExt, DevExt->SgListPages * PAGE_SIZE, PAGE_SIZE,
+        if (!AllocateUncachedMemory(DevExt, DevExt->SgListPages << NVME_PAGE_SHIFT, NVME_PAGE_SIZE,
                                     &DevExt->UtilityBuffer,
                                     &DevExt->UtilityBufferPhys)) {
 #ifdef NVME2K_DBG
@@ -1058,7 +1054,7 @@ BOOLEAN NvmeInitializeController(IN PHW_DEVICE_EXTENSION DevExt)
         DevExt->PrpListPageBitmap = 0;  // All pages free
 
         // 4. Allocate Admin CQ (must be page-aligned for NVMe)
-        if (!AllocateUncachedMemory(DevExt, queueSize * NVME_CQ_ENTRY_SIZE, PAGE_SIZE,
+        if (!AllocateUncachedMemory(DevExt, queueSize * NVME_CQ_ENTRY_SIZE, NVME_PAGE_SIZE,
                                     &DevExt->AdminQueue.CompletionQueue,
                                     &DevExt->AdminQueue.CompletionQueuePhys)) {
 #ifdef NVME2K_DBG
@@ -1068,7 +1064,7 @@ BOOLEAN NvmeInitializeController(IN PHW_DEVICE_EXTENSION DevExt)
         }
 
         // 5. Allocate I/O CQ (must be page-aligned for NVMe)
-        if (!AllocateUncachedMemory(DevExt, queueSize * NVME_CQ_ENTRY_SIZE, PAGE_SIZE,
+        if (!AllocateUncachedMemory(DevExt, queueSize * NVME_CQ_ENTRY_SIZE, NVME_PAGE_SIZE,
                                     &DevExt->IoQueue.CompletionQueue,
                                     &DevExt->IoQueue.CompletionQueuePhys)) {
 #ifdef NVME2K_DBG
@@ -1106,13 +1102,13 @@ BOOLEAN NvmeInitializeController(IN PHW_DEVICE_EXTENSION DevExt)
     DevExt->IoQueue.CompletionQueueTail = 0;
 
     // Zero out queues
-    RtlZeroMemory(DevExt->AdminQueue.SubmissionQueue, DevExt->AdminQueue.QueueSize * NVME_SQ_ENTRY_SIZE);
-    RtlZeroMemory(DevExt->AdminQueue.CompletionQueue, DevExt->AdminQueue.QueueSize * NVME_CQ_ENTRY_SIZE);
-    RtlZeroMemory(DevExt->IoQueue.SubmissionQueue, DevExt->IoQueue.QueueSize * NVME_SQ_ENTRY_SIZE);
-    RtlZeroMemory(DevExt->IoQueue.CompletionQueue, DevExt->IoQueue.QueueSize * NVME_CQ_ENTRY_SIZE);
+    memset(DevExt->AdminQueue.SubmissionQueue, 0, DevExt->AdminQueue.QueueSize * NVME_SQ_ENTRY_SIZE);
+    memset(DevExt->AdminQueue.CompletionQueue, 0, DevExt->AdminQueue.QueueSize * NVME_CQ_ENTRY_SIZE);
+    memset(DevExt->IoQueue.SubmissionQueue, 0, DevExt->IoQueue.QueueSize * NVME_SQ_ENTRY_SIZE);
+    memset(DevExt->IoQueue.CompletionQueue, 0, DevExt->IoQueue.QueueSize * NVME_CQ_ENTRY_SIZE);
 
     // Clear the utility buffer
-    RtlZeroMemory(DevExt->UtilityBuffer, PAGE_SIZE);
+    memset(DevExt->UtilityBuffer, 0, NVME_PAGE_SIZE);
 
     // Configure Admin Queue Attributes
     aqa = ((DevExt->AdminQueue.QueueSize - 1) << 16) | (DevExt->AdminQueue.QueueSize - 1);
@@ -1122,17 +1118,8 @@ BOOLEAN NvmeInitializeController(IN PHW_DEVICE_EXTENSION DevExt)
     NvmeWriteReg64(DevExt, NVME_REG_ASQ, DevExt->AdminQueue.SubmissionQueuePhys.QuadPart);
     NvmeWriteReg64(DevExt, NVME_REG_ACQ, DevExt->AdminQueue.CompletionQueuePhys.QuadPart);
 
-    // Configure controller
-    // Calculate MPS (Memory Page Size) based on host page size.
-    // The value is log2(PAGE_SIZE) - 12.
-    // For 4KB (4096), pageShift = log2(4096) - 12 = 12 - 12 = 0.
-    // For 8KB (8192), pageShift = log2(8192) - 12 = 13 - 12 = 1.
-    pageShift = 0; // Default for 4KB pages
-    if (DevExt->PageSize > 4096) {
-        pageShift = (ULONG)(log2(DevExt->PageSize) - 12);
-    }
     cc = NVME_CC_ENABLE |
-         (pageShift << NVME_CC_MPS_SHIFT) |
+         ((NVME_PAGE_SHIFT - 12) << NVME_CC_MPS_SHIFT) |
          NVME_CC_CSS_NVM |
          NVME_CC_AMS_RR |
          NVME_CC_SHN_NONE |

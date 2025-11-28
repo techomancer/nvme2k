@@ -10,21 +10,6 @@ struct _NVME_SMART_INFO;
 struct _ATA_SMART_DATA;
 
 
-//
-// Memory helper macros (not available in miniport.h)
-//
-#define RtlZeroMemory(Destination, Length) do { \
-    PUCHAR _Dest = (PUCHAR)(Destination); \
-    ULONG _Len = (Length); \
-    while (_Len--) *_Dest++ = 0; \
-} while (0)
-
-#define RtlCopyMemory(Destination, Source, Length) do { \
-    PUCHAR _Dest = (PUCHAR)(Destination); \
-    PUCHAR _Src = (PUCHAR)(Source); \
-    ULONG _Len = (Length); \
-    while (_Len--) *_Dest++ = *_Src++; \
-} while (0)
 
 //
 // Byte manipulation helper macros for handling unaligned little-endian data.
@@ -39,7 +24,6 @@ struct _ATA_SMART_DATA;
                                   (p)[2] = (UCHAR)((val) >> 16); (p)[3] = (UCHAR)((val) >> 24); } while(0)
 
 
-ULONG RtlCompareMemory(IN CONST VOID *Source1, IN CONST VOID *Source2, IN ULONG Length);
 VOID NvmeSmartToAtaSmart(IN struct _NVME_SMART_INFO *NvmeSmart, OUT struct _ATA_SMART_DATA *AtaSmart);
 BOOLEAN NvmeGetLogPage(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb, IN UCHAR LogPageId);
 ULONG log2(ULONG n);

@@ -64,7 +64,7 @@ BOOLEAN ScsiHandleInquiry(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
     }
 
     inquiryData = (PUCHAR)Srb->DataBuffer;
-    RtlZeroMemory(inquiryData, Srb->DataTransferLength);
+    memset(inquiryData, 0, Srb->DataTransferLength);
 
     // Check for EVPD (Enable Vital Product Data)
     // In CDB6INQUIRY, bit 0 of PageCode field is EVPD
@@ -104,7 +104,7 @@ BOOLEAN ScsiHandleInquiry(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
             inquiryData[3] = serialLength;  // Page Length (20 bytes)
 
             // Copy serial number from controller (trim trailing spaces)
-            RtlCopyMemory(&inquiryData[4], DevExt->ControllerSerialNumber, serialLength);
+            memcpy(&inquiryData[4], DevExt->ControllerSerialNumber, serialLength);
 
             Srb->DataTransferLength = pageLength;
             return ScsiSuccess(DevExt, Srb);
@@ -253,7 +253,7 @@ BOOLEAN ScsiHandleInquiry(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
             inquiryData[9] = 0x00;
 
             // Bytes 10-63: Reserved
-            RtlZeroMemory(&inquiryData[10], 54);
+            memset(&inquiryData[10], 0, 54);
 
             Srb->DataTransferLength = 64;
             return ScsiSuccess(DevExt, Srb);
@@ -422,7 +422,7 @@ BOOLEAN ScsiHandleReadWrite(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLO
         // Build flush command with special ORDERED flush CID
         flushCommandId = NvmeBuildFlushCommandId(Srb);
 
-        RtlZeroMemory(&flushCmd, sizeof(NVME_COMMAND));
+        memset(&flushCmd, 0, sizeof(NVME_COMMAND));
         flushCmd.CDW0.Fields.Opcode = NVME_CMD_FLUSH;
         flushCmd.CDW0.Fields.Flags = 0;
         flushCmd.CDW0.Fields.CommandId = flushCommandId;
@@ -445,7 +445,7 @@ BOOLEAN ScsiHandleReadWrite(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLO
     srbExt->PrpListPage = 0xFF;  // No PRP list initially
 
     // Build the NVMe Read/Write command from the SCSI CDB.
-    RtlZeroMemory(&nvmeCmd, sizeof(NVME_COMMAND));
+    memset(&nvmeCmd, 0, sizeof(NVME_COMMAND));
     rc = NvmeBuildReadWriteCommand(DevExt, Srb, &nvmeCmd, commandId);
     if (rc <=0) {
         // most likely couldnt get memory for PRP list
@@ -570,7 +570,7 @@ BOOLEAN ScsiHandleSatPassthrough(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUES
         }
 
         // Return empty 512-byte buffer (all zeros)
-        RtlZeroMemory(Srb->DataBuffer, 512);
+        memset(Srb->DataBuffer, 0, 512);
         Srb->DataTransferLength = 512;
 
         return ScsiSuccess(DevExt, Srb);    
@@ -617,7 +617,7 @@ BOOLEAN ScsiHandleFlush(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK S
     commandId = NvmeBuildCommandId(DevExt, Srb);
 
     // Build NVMe Flush command
-    RtlZeroMemory(&nvmeCmd, sizeof(NVME_COMMAND));
+    memset(&nvmeCmd, 0, sizeof(NVME_COMMAND));
     nvmeCmd.CDW0.Fields.Opcode = NVME_CMD_FLUSH;
     nvmeCmd.CDW0.Fields.Flags = 0;
     nvmeCmd.CDW0.Fields.CommandId = commandId;
@@ -664,7 +664,7 @@ BOOLEAN ScsiHandleReadDefectData10(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQU
     }
 
     buffer = (PUCHAR)Srb->DataBuffer;
-    RtlZeroMemory(buffer, Srb->DataTransferLength);
+    memset(buffer, 0, Srb->DataTransferLength);
 
     // Build READ DEFECT DATA (10) response header (4 bytes)
     // Per SBC-3 specification section 5.7
@@ -755,7 +755,7 @@ BOOLEAN ScsiHandleModeSense(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLO
     }
 
     // Clear the buffer
-    RtlZeroMemory(buffer, Srb->DataTransferLength);
+    memset(buffer, 0, Srb->DataTransferLength);
 
     // Determine block descriptor length
     // For simplicity, we include a block descriptor unless DBD is set
@@ -1201,7 +1201,7 @@ BOOLEAN HandleIO_NVME2KDB(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
     srbControl = (PSRB_IO_CONTROL)Srb->DataBuffer;
 
     // Check signature
-    if (RtlCompareMemory(srbControl->Signature, "NVME2KDB", 8) != 8) {
+    if (memcmp(srbControl->Signature, "NVME2KDB", 8) != 0) {
 #ifdef NVME2K_DBG
         ScsiDebugPrint(0, "nvme2k: Invalid NVME2KDB signature\n");
 #endif
@@ -1239,7 +1239,7 @@ BOOLEAN HandleIO_NVME2KDB(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
             }
 
             // Copy the 4KB pattern to device extension
-            RtlCopyMemory(
+            memcpy(
                 DevExt->TrimPattern,
                 (PUCHAR)Srb->DataBuffer + sizeof(SRB_IO_CONTROL),
                 4096
@@ -1300,7 +1300,7 @@ BOOLEAN HandleSmartGetVersion(
     }
 
     versionParams = (PGETVERSIONINPARAMS)((PUCHAR)Srb->DataBuffer + sizeof(SRB_IO_CONTROL));
-    RtlZeroMemory(versionParams, sizeof(GETVERSIONINPARAMS));
+    memset(versionParams, 0, sizeof(GETVERSIONINPARAMS));
 
     // Fill in version information
     versionParams->bVersion = 1;      // Driver version 1.x
@@ -1358,7 +1358,7 @@ BOOLEAN HandleSmartIdentify(
     NvmeToAtaIdentify(DevExt, (PATA_IDENTIFY_DEVICE_STRUCT)sendCmdOut->bBuffer);
 
     // Set driver status
-    RtlZeroMemory(&sendCmdOut->DriverStatus, sizeof(DRIVERSTATUS));
+    memset(&sendCmdOut->DriverStatus, 0, sizeof(DRIVERSTATUS));
     sendCmdOut->DriverStatus.bDriverError = 0;
     sendCmdOut->DriverStatus.bIDEError = 0;
     sendCmdOut->cBufferSize = 512;
@@ -1448,7 +1448,7 @@ BOOLEAN HandleSmartReturnStatus(
     sendCmdOut = (PSENDCMDOUTPARAMS)((PUCHAR)Srb->DataBuffer + sizeof(SRB_IO_CONTROL));
 
     // Initialize output - no data returned, only status
-    RtlZeroMemory(sendCmdOut, sizeof(SENDCMDOUTPARAMS));
+    memset(sendCmdOut, 0, sizeof(SENDCMDOUTPARAMS));
     sendCmdOut->cBufferSize = 0;
     sendCmdOut->DriverStatus.bDriverError = 0;
     sendCmdOut->DriverStatus.bIDEError = 0;
@@ -1505,7 +1505,7 @@ BOOLEAN HandleIO_SCSIDISK(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
     srbControl = (PSRB_IO_CONTROL)Srb->DataBuffer;
 
     // Check signature (Windows 2000 uses "SCSIDISK" for ATA pass-through)
-    if (RtlCompareMemory(srbControl->Signature, "SCSIDISK", 8) != 8) {
+    if (memcmp(srbControl->Signature, "SCSIDISK", 8) != 0) {
 #ifdef NVME2K_DBG
         ScsiDebugPrint(0, "nvme2k: Invalid SRB_IO_CONTROL signature\n");
 #endif
@@ -1640,7 +1640,7 @@ BOOLEAN HandleIO_SCSIDISK(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
                     return FALSE;
                 }
                 NvmeToAtaIdentify(DevExt, (PATA_IDENTIFY_DEVICE_STRUCT)sendCmdOut->bBuffer);
-                RtlZeroMemory(&sendCmdOut->DriverStatus, sizeof(DRIVERSTATUS));
+                memset(&sendCmdOut->DriverStatus, 0, sizeof(DRIVERSTATUS));
                 sendCmdOut->DriverStatus.bDriverError = 0;
                 sendCmdOut->DriverStatus.bIDEError = 0;
                 sendCmdOut->cBufferSize = 512;
@@ -1684,7 +1684,7 @@ BOOLEAN HandleIO_SCSIDISK(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
                     ScsiDebugPrint(0, "nvme2k: SMART RETURN STATUS request\n");
         #endif
                     // Initialize output structure
-                    RtlZeroMemory(&sendCmdOut->DriverStatus, sizeof(DRIVERSTATUS));
+                    memset(&sendCmdOut->DriverStatus, 0, sizeof(DRIVERSTATUS));
                     sendCmdOut->cBufferSize = 0;
                     sendCmdOut->DriverStatus.bDriverError = 0;  // Success
                     sendCmdOut->DriverStatus.bIDEError = 0;     // No error
@@ -1705,7 +1705,7 @@ BOOLEAN HandleIO_SCSIDISK(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
                     ScsiDebugPrint(0, "nvme2k: SMART ENABLE (NVMe always enabled)\n");
         #endif
                     // NVMe SMART is always enabled
-                    RtlZeroMemory(&sendCmdOut->DriverStatus, sizeof(DRIVERSTATUS));
+                    memset(&sendCmdOut->DriverStatus, 0, sizeof(DRIVERSTATUS));
                     sendCmdOut->DriverStatus.bDriverError = 0;
                     srbControl->ReturnCode = 0;
                     return TRUE;
@@ -1715,7 +1715,7 @@ BOOLEAN HandleIO_SCSIDISK(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
                     ScsiDebugPrint(0, "nvme2k: SMART DISABLE (NVMe cannot disable)\n");
         #endif
                     // NVMe SMART cannot be disabled, return success anyway
-                    RtlZeroMemory(&sendCmdOut->DriverStatus, sizeof(DRIVERSTATUS));
+                    memset(&sendCmdOut->DriverStatus, 0, sizeof(DRIVERSTATUS));
                     sendCmdOut->DriverStatus.bDriverError = 0;
                     srbControl->ReturnCode = 0;
                     return TRUE;
