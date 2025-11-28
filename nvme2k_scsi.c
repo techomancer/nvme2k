@@ -1189,24 +1189,7 @@ BOOLEAN HandleIO_NVME2KDB(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
                    Srb->DataTransferLength);
 #endif
 
-    // Validate minimum size for SRB_IO_CONTROL header
-    if (Srb->DataTransferLength < sizeof(SRB_IO_CONTROL)) {
-#ifdef NVME2K_DBG
-        ScsiDebugPrint(0, "nvme2k: HandleIO_NVME2KDB invalid transfer length - DataTransferLength=%u\n",
-                       Srb->DataTransferLength);
-#endif
-        return FALSE;
-    }
-
     srbControl = (PSRB_IO_CONTROL)Srb->DataBuffer;
-
-    // Check signature
-    if (memcmp(srbControl->Signature, "NVME2KDB", 8) != 0) {
-#ifdef NVME2K_DBG
-        ScsiDebugPrint(0, "nvme2k: Invalid NVME2KDB signature\n");
-#endif
-        return FALSE;
-    }
 
 #ifdef NVME2K_DBG
     ScsiDebugPrint(0, "nvme2k: NVME2KDB IOCTL ControlCode=0x%08X Length=%u\n",
@@ -1280,6 +1263,304 @@ BOOLEAN HandleIO_NVME2KDB(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
 }
 
 //
+// HandleSecurityProtocolOut - Process SCSIOP_SECURITY_PROTOCOL_OUT (0xB5)
+//
+// This handler processes the Samsung NVMe extension via direct SCSI command.
+// The CDB contains:
+//   CDB[0] = SCSIOP_SECURITY_PROTOCOL_OUT (0xB5)
+//   CDB[1] = 0xFE (Samsung extension protocol)
+//   CDB[3] = NVMe admin opcode (NVME_ADMIN_IDENTIFY or NVME_ADMIN_GET_LOG_PAGE)
+//   CDB[4] = Namespace ID
+//   CDB[5] = CNS value (for IDENTIFY) or Log Page ID (for GET_LOG_PAGE)
+//
+// Data buffer contains the 4KB NVMe response data
+//
+BOOLEAN HandleSecurityProtocolOut(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb)
+{
+    PUCHAR cdb;
+    UCHAR nvmeOpcode;
+    ULONG namespaceId;
+    UCHAR parameter;
+    USHORT commandId;
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: HandleSecurityProtocolOut called - DataTransferLength=%u\n",
+                   Srb->DataTransferLength);
+#endif
+
+    // Validate minimum buffer size for 4KB NVMe data
+    if (Srb->DataTransferLength < NVME_PAGE_SIZE) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: HandleSecurityProtocolOut buffer too small - DataTransferLength=%u\n",
+                       Srb->DataTransferLength);
+#endif
+        return FALSE;
+    }
+
+    cdb = Srb->Cdb;
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: SecurityProtocolOut CDB: %02X %02X %02X %02X %02X %02X...\n",
+                   cdb[0], cdb[1], cdb[2], cdb[3], cdb[4], cdb[5]);
+#endif
+
+    // Check for Samsung extension protocol (0xFE)
+    if (cdb[1] != 0xFE) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: HandleSecurityProtocolOut not Samsung extension (protocol=%02X)\n", cdb[1]);
+#endif
+        return FALSE;
+    }
+
+    // Check if this is a non-tagged request (QueueTag == SP_UNTAGGED or no queue action enabled)
+    if (!((Srb->SrbFlags & SRB_FLAGS_QUEUE_ACTION_ENABLE) && (Srb->QueueTag != SP_UNTAGGED))) {
+        // Non-tagged request - only one can be in flight at a time
+        if (DevExt->NonTaggedInFlight) {
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: SecurityProtocolOut rejected - another non-tagged request in flight tag:%02X\n", Srb->QueueTag);
+#endif
+            return ScsiBusy(DevExt, Srb);
+        }
+    }
+
+    // Extract parameters from CDB
+    nvmeOpcode = cdb[3];   // NVMe admin opcode
+    namespaceId = cdb[4];  // Namespace ID
+    parameter = cdb[5];    // CNS (for IDENTIFY) or Log Page ID (for GET_LOG_PAGE)
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: Samsung NVMe extension (0xB5) - Opcode=%02X NSID=%u Param=%02X\n",
+                   nvmeOpcode, namespaceId, parameter);
+#endif
+
+    // Process based on NVMe opcode
+    switch (nvmeOpcode) {
+        case NVME_ADMIN_IDENTIFY:
+            // IDENTIFY command
+            // parameter = CNS (Controller/Namespace Structure)
+            commandId = ADMIN_CID_SAMSUNG_IDENTIFY | CID_NON_TAGGED_FLAG;
+
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: Samsung IDENTIFY (0xB5) - NSID=%u CNS=%02X CID=%04X\n",
+                           namespaceId, parameter, commandId);
+#endif
+            // apparently siv sets all to 0
+            if (parameter == 0 && namespaceId == 0)
+                parameter = NVME_CNS_CONTROLLER;
+            if (!NvmeIdentifyEx(DevExt, namespaceId, parameter, commandId, Srb)) {
+#ifdef NVME2K_DBG
+                ScsiDebugPrint(0, "nvme2k: NvmeIdentifyEx failed\n");
+#endif
+                Srb->SrbStatus = SRB_STATUS_ERROR;
+                return FALSE;
+            }
+
+            // Mark as pending - will complete in interrupt handler
+            Srb->SrbStatus = SRB_STATUS_PENDING;
+            return TRUE;
+
+        case NVME_ADMIN_GET_LOG_PAGE:
+            // GET_LOG_PAGE command
+            // parameter = Log Page ID
+            commandId = ADMIN_CID_SAMSUNG_GET_LOG_PAGE | CID_NON_TAGGED_FLAG;
+
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: Samsung GET_LOG_PAGE (0xB5) - NSID=%u LID=%02X CID=%04X\n",
+                           namespaceId, parameter, commandId);
+#endif
+
+            // SMART/Health log (0x02) is 512 bytes (128 DWORDs), others may vary
+            // For now, default to 512 bytes for SMART, full page for others
+            if (!NvmeGetLogPageEx(DevExt, Srb, parameter, namespaceId, commandId,
+                                  (parameter == 0x02) ? 128 : 0)) {
+#ifdef NVME2K_DBG
+                ScsiDebugPrint(0, "nvme2k: NvmeGetLogPageEx failed\n");
+#endif
+                Srb->SrbStatus = SRB_STATUS_ERROR;
+                return FALSE;
+            }
+
+            // Mark as pending - will complete in interrupt handler
+            Srb->SrbStatus = SRB_STATUS_PENDING;
+            return TRUE;
+
+        default:
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: Samsung extension (0xB5) unsupported opcode: %02X\n", nvmeOpcode);
+#endif
+            return FALSE;
+    }
+}
+
+//
+// HandleIO_NvmeMini - Process NvmeMini IOCTLs (NVMe passthrough)
+//
+// This handler processes NVMe passthrough commands via SRB_IO_CONTROL using
+// the NVME_PASS_THROUGH structure. The buffer layout is:
+//   [SRB_IO_CONTROL (28 bytes)] + [NVME_PASS_THROUGH] + [data buffer]
+//
+BOOLEAN HandleIO_NvmeMini(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb)
+{
+    PSRB_IO_CONTROL srbControl;
+    PNVME_PASS_THROUGH nvmePassThru;
+    PULONG nvmeCmd;
+    UCHAR nvmeOpcode;
+    ULONG namespaceId;
+    UCHAR parameter;
+    USHORT commandId;
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: HandleIO_NvmeMini called - DataTransferLength=%u\n",
+                   Srb->DataTransferLength);
+#endif
+
+    srbControl = (PSRB_IO_CONTROL)Srb->DataBuffer;
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NvmeMini IOCTL ControlCode=0x%08X Length=%u\n",
+                   srbControl->ControlCode, srbControl->Length);
+#endif
+
+    // Get NVME_PASS_THROUGH structure (follows SRB_IO_CONTROL)
+    nvmePassThru = (PNVME_PASS_THROUGH)((PUCHAR)Srb->DataBuffer + sizeof(SRB_IO_CONTROL));
+    nvmeCmd = nvmePassThru->Command;  // 16 DWORDs (64 bytes) NVMe command
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NVME_PASS_THROUGH - QueueId=%u Direction=%u DataBufferLen=%u MetaDataLen=%u ReturnBufferLen=%u\n",
+                   nvmePassThru->QueueId, nvmePassThru->Direction, nvmePassThru->DataBufferLen,
+                   nvmePassThru->MetaDataLen, nvmePassThru->ReturnBufferLen);
+#endif
+
+    // Verify this is an Admin queue command (QueueId == 0)
+    if (nvmePassThru->QueueId != 0) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: HandleIO_NvmeMini not Admin queue (QueueId=%u)\n",
+                       nvmePassThru->QueueId);
+#endif
+        return FALSE;
+    }
+
+    // Extract NVMe command parameters from the 64-byte command
+    // CDW0 bits 0-7 = opcode
+    nvmeOpcode = (UCHAR)(nvmeCmd[0] & 0xFF);
+    // CDW1 = namespace ID
+    namespaceId = nvmeCmd[1];
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NVMe Admin command - Opcode=%02X NSID=0x%08X\n",
+                   nvmeOpcode, namespaceId);
+#endif
+
+    // Process based on NVMe opcode
+    switch (nvmeOpcode) {
+        case NVME_ADMIN_IDENTIFY:
+            // IDENTIFY command
+            // CDW10 bits 0-7 = CNS (Controller or Namespace Structure)
+            // IDENTIFY always returns 4KB of data
+            parameter = (UCHAR)(nvmeCmd[10] & 0xFF);
+            commandId = ADMIN_CID_SAMSUNG_IDENTIFY | CID_NON_TAGGED_FLAG;
+
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: NvmeMini IDENTIFY - NSID=%u CNS=%02X CDW10=%08X CID=%04X\n",
+                           namespaceId, parameter, nvmeCmd[10], commandId);
+#endif
+
+            if (!NvmeIdentifyEx(DevExt, namespaceId, parameter, commandId, Srb)) {
+#ifdef NVME2K_DBG
+                ScsiDebugPrint(0, "nvme2k: NvmeIdentifyEx failed\n");
+#endif
+                srbControl->ReturnCode = 1;  // Error
+                Srb->SrbStatus = SRB_STATUS_ERROR;
+                return FALSE;
+            }
+
+            // Mark as pending - will complete in interrupt handler
+            Srb->SrbStatus = SRB_STATUS_PENDING;
+            srbControl->ReturnCode = 0;  // Success (will be completed async)
+            return TRUE;
+
+        case NVME_ADMIN_GET_LOG_PAGE:
+            // GET_LOG_PAGE command
+            // CDW10 bits 0-7 = Log Page ID
+            // CDW10 bits 31:16 = NUMDL (Number of Dwords Lower)
+            {
+                ULONG numDwords;
+                ULONG numdl = (nvmeCmd[10] >> 16) & 0xFFFF;
+
+                parameter = (UCHAR)(nvmeCmd[10] & 0xFF);
+                commandId = ADMIN_CID_SAMSUNG_GET_LOG_PAGE | CID_NON_TAGGED_FLAG;
+
+#ifdef NVME2K_DBG
+                ScsiDebugPrint(0, "nvme2k: NvmeMini GET_LOG_PAGE - NSID=%u LID=%02X CDW10=%08X (NUMDL=%u) CID=%04X\n",
+                               namespaceId, parameter, nvmeCmd[10], numdl, commandId);
+#endif
+
+                // Extract NUMDL and convert to NumDwords (NUMDL+1)
+                numDwords = numdl + 1;
+
+                // Sanity check: Fix obviously wrong NUMDL values based on known log page sizes
+                // Some applications (like SIV) may set incorrect NUMDL values
+                switch (parameter) {
+                    case 0x01:  // Error Information log - 64 bytes per entry, typically request 256 bytes = 64 DWORDs
+                        if (numDwords < 64) {
+                            numDwords = 64;
+#ifdef NVME2K_DBG
+                            ScsiDebugPrint(0, "nvme2k: Fixing NUMDL for Error log (was %u, now 64 DWORDs)\n", numdl + 1);
+#endif
+                        }
+                        break;
+                    case 0x02:  // SMART/Health Information log - always 512 bytes = 128 DWORDs
+                        if (numDwords != 128) {
+                            numDwords = 128;
+#ifdef NVME2K_DBG
+                            ScsiDebugPrint(0, "nvme2k: Fixing NUMDL for SMART log (was %u, now 128 DWORDs)\n", numdl + 1);
+#endif
+                        }
+                        break;
+                    case 0x03:  // Firmware Slot Information log - 512 bytes = 128 DWORDs
+                        if (numDwords != 128) {
+                            numDwords = 128;
+#ifdef NVME2K_DBG
+                            ScsiDebugPrint(0, "nvme2k: Fixing NUMDL for Firmware Slot log (was %u, now 128 DWORDs)\n", numdl + 1);
+#endif
+                        }
+                        break;
+                    default:
+                        // For unknown log pages, use what the application specified
+                        // but warn if it seems suspiciously small
+                        if (numDwords < 16) {
+#ifdef NVME2K_DBG
+                            ScsiDebugPrint(0, "nvme2k: WARNING - Small NUMDL=%u for log page 0x%02X\n", numdl, parameter);
+#endif
+                        }
+                        break;
+                }
+
+                if (!NvmeGetLogPageEx(DevExt, Srb, parameter, namespaceId, commandId, numDwords)) {
+#ifdef NVME2K_DBG
+                    ScsiDebugPrint(0, "nvme2k: NvmeGetLogPageEx failed\n");
+#endif
+                    srbControl->ReturnCode = 1;  // Error
+                    Srb->SrbStatus = SRB_STATUS_ERROR;
+                    return FALSE;
+                }
+
+                // Mark as pending - will complete in interrupt handler
+                Srb->SrbStatus = SRB_STATUS_PENDING;
+                srbControl->ReturnCode = 0;  // Success (will be completed async)
+                return TRUE;
+            }
+
+        default:
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: NvmeMini unsupported NVMe admin opcode: %02X\n", nvmeOpcode);
+#endif
+            srbControl->ReturnCode = 1;  // Error
+            return FALSE;
+    }
+}
+
+//
 // SMART IOCTL Handler Functions
 //
 
@@ -1296,6 +1577,7 @@ BOOLEAN HandleSmartGetVersion(
         ScsiDebugPrint(0, "nvme2k: SMART_VERSION buffer too small (%u < %u)\n",
                        Srb->DataTransferLength, requiredSize);
 #endif
+        Srb->SrbStatus = SRB_STATUS_DATA_OVERRUN;
         return FALSE;
     }
 
@@ -1338,6 +1620,7 @@ BOOLEAN HandleSmartIdentify(
         ScsiDebugPrint(0, "nvme2k: IDENTIFY buffer too small for input (%u < %u)\n",
                        Srb->DataTransferLength, requiredSize);
 #endif
+        Srb->SrbStatus = SRB_STATUS_DATA_OVERRUN;
         return FALSE;
     }
 
@@ -1348,6 +1631,7 @@ BOOLEAN HandleSmartIdentify(
         ScsiDebugPrint(0, "nvme2k: IDENTIFY buffer too small for output (%u < %u)\n",
                        Srb->DataTransferLength, dataBufferSize);
 #endif
+        Srb->SrbStatus = SRB_STATUS_DATA_OVERRUN;
         return FALSE;
     }
 
@@ -1385,6 +1669,7 @@ BOOLEAN HandleSmartReadAttribs(
         ScsiDebugPrint(0, "nvme2k: READ_SMART_ATTRIBS buffer too small for input (%u < %u)\n",
                        Srb->DataTransferLength, requiredSize);
 #endif
+        Srb->SrbStatus = SRB_STATUS_DATA_OVERRUN;
         return FALSE;    
     }
 
@@ -1395,6 +1680,7 @@ BOOLEAN HandleSmartReadAttribs(
         ScsiDebugPrint(0, "nvme2k: READ_SMART_ATTRIBS buffer too small for output (%u < %u)\n",
                        Srb->DataTransferLength, dataBufferSize);
 #endif
+        Srb->SrbStatus = SRB_STATUS_DATA_OVERRUN;
         return FALSE;
     }
 
@@ -1442,6 +1728,7 @@ BOOLEAN HandleSmartReturnStatus(
         ScsiDebugPrint(0, "nvme2k: RETURN_STATUS buffer too small (%u < %u)\n",
                        Srb->DataTransferLength, requiredSize);
 #endif
+        Srb->SrbStatus = SRB_STATUS_DATA_OVERRUN;
         return FALSE;
     }
 
@@ -1479,89 +1766,74 @@ BOOLEAN HandleSmartReturnStatus(
 BOOLEAN HandleIO_SCSIDISK(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb)
 {
     PSRB_IO_CONTROL srbControl;
-    PSENDCMDINPARAMS sendCmdIn;
-    PSENDCMDOUTPARAMS sendCmdOut;
-    PIDEREGS regs;
-    ULONG dataBufferSize;
-    ULONG requiredSize;
-    NVME_SMART_INFO smartInfo;
-    PHYSICAL_ADDRESS smartPhys;
-    ULONG returnedLength;
 
 #ifdef NVME2K_DBG
     ScsiDebugPrint(0, "nvme2k: HandleSmartIoctl called - DataTransferLength=%u\n",
                    Srb->DataTransferLength);
 #endif
 
-    // Validate minimum size for SRB_IO_CONTROL header
-    if (Srb->DataTransferLength < sizeof(SRB_IO_CONTROL)) {
-#ifdef NVME2K_DBG
-    ScsiDebugPrint(0, "nvme2k: HandleSmartIoctl invalid transfer length - DataTransferLength=%u\n",
-                   Srb->DataTransferLength);
-#endif
-        return FALSE;
-    }
-
     srbControl = (PSRB_IO_CONTROL)Srb->DataBuffer;
-
-    // Check signature (Windows 2000 uses "SCSIDISK" for ATA pass-through)
-    if (memcmp(srbControl->Signature, "SCSIDISK", 8) != 0) {
-#ifdef NVME2K_DBG
-        ScsiDebugPrint(0, "nvme2k: Invalid SRB_IO_CONTROL signature\n");
-#endif
-        return FALSE;
-    }
 
     switch (srbControl->ControlCode) {
         case IOCTL_SCSI_PASS_THROUGH:
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_SCSI_PASS_THROUGH\n");
 #endif
+            srbControl->ReturnCode = 1;
             return FALSE;
         case IOCTL_SCSI_MINIPORT:
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_SCSI_MINIPORT\n");
 #endif
+            srbControl->ReturnCode = 1;
             return FALSE;
         case IOCTL_SCSI_GET_INQUIRY_DATA:
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_SCSI_GET_INQUIRY_DATA\n");
 #endif
+            srbControl->ReturnCode = 1;
             return FALSE;
         case IOCTL_SCSI_GET_CAPABILITIES:
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_SCSI_GET_CAPABILITIES\n");
 #endif
+            srbControl->ReturnCode = 1;
             return FALSE;
         case IOCTL_SCSI_PASS_THROUGH_DIRECT:
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_SCSI_PASS_THROUGH_DIRECT\n");
 #endif
+            srbControl->ReturnCode = 1;
             return FALSE;
         case IOCTL_SCSI_GET_ADDRESS:
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_SCSI_GET_ADDRESS\n");
 #endif
+            srbControl->ReturnCode = 1;
             return FALSE;
         case IOCTL_SCSI_RESCAN_BUS:
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_SCSI_RESCAN_BUS\n");
 #endif
+            srbControl->ReturnCode = 1;
             return FALSE;
         case IOCTL_SCSI_GET_DUMP_POINTERS:
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_SCSI_GET_DUMP_POINTERS\n");
 #endif
+            srbControl->ReturnCode = 1;
             return FALSE;
         case IOCTL_SCSI_FREE_DUMP_POINTERS:
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_SCSI_FREE_DUMP_POINTERS\n");
 #endif
+            srbControl->ReturnCode = 1;
             return FALSE;
         case IOCTL_IDE_PASS_THROUGH:
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_IDE_PASS_THROUGH\n");
 #endif
+            srbControl->ReturnCode = 1;
             return FALSE;
         case IOCTL_SCSI_MINIPORT_SMART_VERSION:
 #ifdef NVME2K_DBG
@@ -1582,6 +1854,7 @@ BOOLEAN HandleIO_SCSIDISK(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: SCSIDISK IOCTL_SCSI_MINIPORT_READ_SMART_THRESHOLDS\n");
 #endif
+            srbControl->ReturnCode = 1;
             return FALSE;
         case IOCTL_SCSI_MINIPORT_ENABLE_SMART:
 #ifdef NVME2K_DBG
@@ -1604,139 +1877,7 @@ BOOLEAN HandleIO_SCSIDISK(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: SCSIDISK unknown IOCTL:%08X function:%03X\n", srbControl->ControlCode, (srbControl->ControlCode >> 2) & 0xFFF);
 #endif
-            //srbControl->ReturnCode = STATUS_INVALID_DEVICE_REQUEST;
-            return FALSE; // returns SRB_STATUS_INVALID_REQUEST
-    }
-
-#if 0
-    // Validate that we have enough space for SENDCMDINPARAMS
-    requiredSize = sizeof(SRB_IO_CONTROL) + sizeof(SENDCMDINPARAMS) - 1;
-    if (Srb->DataTransferLength < requiredSize) {
-#ifdef NVME2K_DBG
-    ScsiDebugPrint(0, "nvme2k: HandleSmartIoctl called - DataTransferLength=%u required size = %u\n",
-                   Srb->DataTransferLength, requiredSize);
-#endif
-        return FALSE;
-    }
-
-// implement IDE pass through, who uses it?
-    // Get the SENDCMDINPARAMS structure (follows SRB_IO_CONTROL header)
-    sendCmdIn = (PSENDCMDINPARAMS)((PUCHAR)Srb->DataBuffer + sizeof(SRB_IO_CONTROL));
-    sendCmdOut = (PSENDCMDOUTPARAMS)((PUCHAR)Srb->DataBuffer + sizeof(SRB_IO_CONTROL));
-    regs = &sendCmdIn->irDriveRegs;
-
-#ifdef NVME2K_DBG
-    ScsiDebugPrint(0, "nvme2k: HandleSmartIoctl SMART IOCTL IO:%08X sz:%08X Cmd=0x%02X Feature=0x%02X CylLow=0x%02X CylHi=0x%02X Drive:%02X\n",
-                   srbControl->ControlCode, sendCmdIn->cBufferSize, regs->bCommandReg, regs->bFeaturesReg, regs->bCylLowReg, regs->bCylHighReg, sendCmdIn->bDriveNumber);
-#endif
-
-    switch (regs->bCommandReg) {
-        case ATA_IDENTIFY_DEVICE:
-            // Validate SMART signature in cylinder registers
-            if (regs->bCylLowReg != SMART_CYL_LOW || regs->bCylHighReg != SMART_CYL_HI) {
-                // Not a SMART command, could be IDENTIFY or other ATA command
-                dataBufferSize = sizeof(SRB_IO_CONTROL) + sizeof(SENDCMDOUTPARAMS) + 512 - 1;
-                if (Srb->DataTransferLength < dataBufferSize) {
-                    return FALSE;
-                }
-                NvmeToAtaIdentify(DevExt, (PATA_IDENTIFY_DEVICE_STRUCT)sendCmdOut->bBuffer);
-                memset(&sendCmdOut->DriverStatus, 0, sizeof(DRIVERSTATUS));
-                sendCmdOut->DriverStatus.bDriverError = 0;
-                sendCmdOut->DriverStatus.bIDEError = 0;
-                sendCmdOut->cBufferSize = 512;
-                srbControl->ReturnCode = 0;
-                Srb->SrbStatus = SRB_STATUS_SUCCESS;
-                return TRUE;
-            } else {
-                return FALSE;
-            }
-            break;
-        case ATA_SMART_CMD:
-            // Process based on SMART subcommand (features register)
-            switch (regs->bFeaturesReg) {
-                case ATA_SMART_READ_DATA:
-                    // Read SMART data / attributes - translate to NVMe Get Log Page
-        #ifdef NVME2K_DBG
-                    ScsiDebugPrint(0, "nvme2k: SMART READ DATA/ATTRIBS request\n");
-        #endif
-                    // Ensure we have buffer space for output
-                    dataBufferSize = sizeof(SRB_IO_CONTROL) + sizeof(SENDCMDOUTPARAMS) + 512 - 1;
-                    if (Srb->DataTransferLength < dataBufferSize) {
-                        return FALSE;
-                    }
-
-                    // Issue async NVMe Get Log Page command for SMART/Health info
-                    // The command will complete in the interrupt handler which will copy data
-                    if (!NvmeGetLogPage(DevExt, Srb, NVME_LOG_PAGE_SMART_HEALTH)) {
-        #ifdef NVME2K_DBG
-                        ScsiDebugPrint(0, "nvme2k: Failed to submit Get Log Page command\n");
-        #endif
-                        return FALSE;
-                    }
-
-                    // Mark SRB as pending - will be completed in interrupt handler
-                    Srb->SrbStatus = SRB_STATUS_PENDING;
-                    return TRUE;
-
-                case ATA_SMART_RETURN_STATUS:
-                    // Return SMART status - check if device is healthy
-        #ifdef NVME2K_DBG
-                    ScsiDebugPrint(0, "nvme2k: SMART RETURN STATUS request\n");
-        #endif
-                    // Initialize output structure
-                    memset(&sendCmdOut->DriverStatus, 0, sizeof(DRIVERSTATUS));
-                    sendCmdOut->cBufferSize = 0;
-                    sendCmdOut->DriverStatus.bDriverError = 0;  // Success
-                    sendCmdOut->DriverStatus.bIDEError = 0;     // No error
-
-                    // In ATA SMART, threshold exceeded is indicated by:
-                    // Cylinder registers: 0x2C (low) and 0xF4 (high) = FAILING
-                    // Cylinder registers: 0x4F (low) and 0xC2 (high) = PASSING
-                    // We'd need to read NVMe SMART critical warning to determine this
-                    // For now, return passing status
-                    regs->bCylLowReg = SMART_CYL_LOW;   // 0x4F = passing
-                    regs->bCylHighReg = SMART_CYL_HI;   // 0xC2 = passing
-
-                    srbControl->ReturnCode = 0;  // Success
-                    return TRUE;
-
-                case ATA_SMART_ENABLE:
-        #ifdef NVME2K_DBG
-                    ScsiDebugPrint(0, "nvme2k: SMART ENABLE (NVMe always enabled)\n");
-        #endif
-                    // NVMe SMART is always enabled
-                    memset(&sendCmdOut->DriverStatus, 0, sizeof(DRIVERSTATUS));
-                    sendCmdOut->DriverStatus.bDriverError = 0;
-                    srbControl->ReturnCode = 0;
-                    return TRUE;
-
-                case ATA_SMART_DISABLE:
-        #ifdef NVME2K_DBG
-                    ScsiDebugPrint(0, "nvme2k: SMART DISABLE (NVMe cannot disable)\n");
-        #endif
-                    // NVMe SMART cannot be disabled, return success anyway
-                    memset(&sendCmdOut->DriverStatus, 0, sizeof(DRIVERSTATUS));
-                    sendCmdOut->DriverStatus.bDriverError = 0;
-                    srbControl->ReturnCode = 0;
-                    return TRUE;
-
-                case ATA_SMART_AUTOSAVE:
-                case ATA_SMART_READ_THRESHOLDS:
-                default:
-        #ifdef NVME2K_DBG
-                    ScsiDebugPrint(0, "nvme2k: Unsupported SMART subcommand 0x%02X\n",
-                                regs->bFeaturesReg);
-        #endif
-                    return FALSE;
-            } // switch bFeatursReg
-            break;
-
-        default:
-#ifdef NVME2K_DBG
-            ScsiDebugPrint(0, "nvme2k: HandleSmartIoctl unhandled - Cmd=0x%02X Feature=0x%02X CylLow=0x%02X CylHi=0x%02X\n",
-                   regs->bCommandReg, regs->bFeaturesReg, regs->bCylLowReg, regs->bCylHighReg);
-#endif
+            srbControl->ReturnCode = 1;
             return FALSE;
-    } // switch bCommandReg
-#endif
+    }
 }

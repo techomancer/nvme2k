@@ -10,7 +10,7 @@ VOID NvmeProcessGetLogPageCompletion(IN PHW_DEVICE_EXTENSION DevExt, IN USHORT s
     PSCSI_REQUEST_BLOCK Srb;
     PVOID prpBuffer;
     PNVME_SRB_EXTENSION srbExt;
-    UCHAR prpPageIndex = (UCHAR)((commandId & CID_VALUE_MASK) - ADMIN_CID_GET_LOG_PAGE);
+    UCHAR prpPageIndex;
 
     // Get the untagged SRB from ScsiPort
     // ScsiPort guarantees only one untagged request at a time
@@ -24,15 +24,13 @@ VOID NvmeProcessGetLogPageCompletion(IN PHW_DEVICE_EXTENSION DevExt, IN USHORT s
     } else {
         // Get PRP page index from SRB extension
         srbExt = (PNVME_SRB_EXTENSION)Srb->SrbExtension;
+        prpPageIndex = srbExt->PrpListPage;
 
 #ifdef NVME2K_DBG
-        ScsiDebugPrint(0, "nvme2k: GetLogPageCpl - CID=%u PRP=%u srbPRP=%u Status=0x%04X\n",
-                       ADMIN_CID_GET_LOG_PAGE, prpPageIndex, srbExt->PrpListPage, status);
-        if (srbExt->PrpListPage != prpPageIndex) {
-            ScsiDebugPrint(0, "nvme2k: THIS IS BAD\n");
-        }
+        ScsiDebugPrint(0, "nvme2k: GetLogPageCpl - CID=%u PRP=%u Status=0x%04X\n",
+                       ADMIN_CID_GET_LOG_PAGE, prpPageIndex, status);
 #endif
-        prpBuffer = (PVOID)((PUCHAR)DevExt->PrpListPages + (prpPageIndex << NVME_PAGE_SHIFT));
+        prpBuffer = GetPrpListPageVirtual(DevExt, prpPageIndex);
 
         // Determine the request type: LOG SENSE, SAT PASS-THROUGH, or SMART IOCTL
         if (Srb->Function == SRB_FUNCTION_EXECUTE_SCSI && Srb->Cdb[0] == SCSIOP_LOG_SENSE) {
@@ -138,6 +136,133 @@ VOID NvmeProcessGetLogPageCompletion(IN PHW_DEVICE_EXTENSION DevExt, IN USHORT s
     }
 
     FreePrpListPage(DevExt, prpPageIndex);
+}
+
+//
+// NvmeProcessSamsungExtensionCompletion - Handle Samsung NVMe extension completion
+//
+VOID NvmeProcessSamsungExtensionCompletion(
+    IN PHW_DEVICE_EXTENSION DevExt,
+    IN USHORT commandId,
+    IN USHORT status,
+    IN PNVME_COMPLETION cqEntry)
+{
+    PSCSI_REQUEST_BLOCK Srb;
+    PNVME_SRB_EXTENSION srbExt;
+    PVOID prpBuffer;
+    PNVME_PASS_THROUGH nvmePassThru;
+    ULONG copySize;
+    ULONG dataOffset;
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: Samsung extension completion - CID=%04X Status=0x%04X DW0=%08X DW1=%08X\n",
+                   commandId, status, cqEntry->DW0, cqEntry->DW1);
+#endif
+
+    // Retrieve SRB using ScsiPortGetSrb (untagged because SCSI doesn't use tags here)
+    // If that fails, use NonTaggedInFlight as backup
+    Srb = NvmeGetSrbFromCommandId(DevExt, commandId);
+
+    if (!Srb) {
+        return;
+    }
+
+    // Get PRP buffer pointer
+    srbExt = (PNVME_SRB_EXTENSION)Srb->SrbExtension;
+    if (srbExt && srbExt->PrpListPage != 0xFF) {
+        prpBuffer = GetPrpListPageVirtual(DevExt, srbExt->PrpListPage);
+    } else {
+        prpBuffer = NULL;
+    }
+
+    if (status == NVME_SC_SUCCESS && prpBuffer) {
+        // Handle different buffer layouts based on SRB function
+        if (Srb->Function == SRB_FUNCTION_EXECUTE_SCSI) {
+            // Direct SCSI command (0xB5) - simple buffer layout
+            // Data is at offset 0 in DataBuffer
+            dataOffset = 0;
+            copySize = NVME_PAGE_SIZE;
+
+            if (Srb->DataTransferLength >= NVME_PAGE_SIZE) {
+                memcpy(Srb->DataBuffer, prpBuffer, copySize);
+#ifdef NVME2K_DBG
+                ScsiDebugPrint(0, "nvme2k: Direct SCSI 0xB5 completed - copied %u bytes\n", copySize);
+#endif
+                Srb->SrbStatus = SRB_STATUS_SUCCESS;
+            } else {
+                copySize = 0;
+#ifdef NVME2K_DBG
+                ScsiDebugPrint(0, "nvme2k: ERROR - Direct SCSI buffer too small! DataTransferLength=%u\n",
+                               Srb->DataTransferLength);
+#endif
+                Srb->SrbStatus = SRB_STATUS_DATA_OVERRUN;
+            }
+
+        } else if (Srb->Function == SRB_FUNCTION_IO_CONTROL) {
+            PSRB_IO_CONTROL srbControl = (PSRB_IO_CONTROL)Srb->DataBuffer;
+            // IO_CONTROL path (NvmeMini) - complex buffer layout
+            // Buffer layout: SRB_IO_CONTROL + NVME_PASS_THROUGH + data
+            //
+            // srbControl->Length = total payload after SRB_IO_CONTROL
+            // The 4KB NVMe data is at the END of the payload
+            // So: dataOffset = sizeof(SRB_IO_CONTROL) + (Length - 4096)
+            nvmePassThru = (PNVME_PASS_THROUGH)((PUCHAR)Srb->DataBuffer + sizeof(SRB_IO_CONTROL));
+            dataOffset = sizeof(SRB_IO_CONTROL) + sizeof(NVME_PASS_THROUGH);
+
+            // Populate the Completion array (4 DWORDs from completion queue entry)
+            nvmePassThru->Completion[0] = cqEntry->DW0;
+            nvmePassThru->Completion[1] = cqEntry->DW1;
+            nvmePassThru->Completion[2] = ((ULONG)cqEntry->SQID << 16) | cqEntry->SQHead;
+            nvmePassThru->Completion[3] = ((ULONG)cqEntry->Status << 16) | cqEntry->CID;
+
+            // Verify we have enough space
+            if (Srb->DataTransferLength >= dataOffset + NVME_PAGE_SIZE) {
+                copySize = NVME_PAGE_SIZE;
+                memcpy((PUCHAR)Srb->DataBuffer + dataOffset, prpBuffer, copySize);
+#ifdef NVME2K_DBG
+                ScsiDebugPrint(0, "nvme2k: NvmeMini IO_CONTROL completed - copied %u bytes to offset %u (TotalLen=%u, Length=%u)\n",
+                               copySize, dataOffset, Srb->DataTransferLength, srbControl->Length);
+                ScsiDebugPrint(0, "nvme2k: Completion: [%08X %08X %08X %08X]\n",
+                               nvmePassThru->Completion[0], nvmePassThru->Completion[1],
+                               nvmePassThru->Completion[2], nvmePassThru->Completion[3]);
+#endif
+                // DataTransferLength stays the same (total buffer size from userland)
+                Srb->SrbStatus = SRB_STATUS_SUCCESS;
+                srbControl->ReturnCode = 0;  // success
+            } else {
+                // Buffer too small, shouldn't happen
+                copySize = 0;
+#ifdef NVME2K_DBG
+                ScsiDebugPrint(0, "nvme2k: ERROR - NvmeMini buffer too small! DataTransferLength=%u dataOffset=%u\n",
+                               Srb->DataTransferLength, dataOffset);
+#endif
+                // DataTransferLength stays the same (total buffer size from userland)
+                Srb->SrbStatus = SRB_STATUS_DATA_OVERRUN;
+                srbControl->ReturnCode = 5;  // insufficient out buffer
+            }
+
+        }
+    } else {
+        // On error, don't modify the buffer
+        Srb->SrbStatus = SRB_STATUS_ERROR;
+        if (Srb->Function == SRB_FUNCTION_IO_CONTROL) {
+            PSRB_IO_CONTROL srbControl = (PSRB_IO_CONTROL)Srb->DataBuffer;
+            srbControl->ReturnCode = 1;  // Error
+        }
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: Samsung extension command failed with NVMe status 0x%04X\n", status);
+#endif
+    }
+
+    // Free PRP list page if allocated
+    if (srbExt && srbExt->PrpListPage != 0xFF) {
+        FreePrpListPage(DevExt, srbExt->PrpListPage);
+        srbExt->PrpListPage = 0xFF;
+    }
+
+    // Complete the request
+    ScsiPortNotification(RequestComplete, DevExt, Srb);
+    ScsiPortNotification(NextRequest, DevExt, NULL);
 }
 
 //
@@ -309,8 +434,10 @@ BOOLEAN NvmeProcessAdminCompletion(IN PHW_DEVICE_EXTENSION DevExt)
         } else {
             // Post-initialization admin commands
             // Check if this is a Get Log Page command
-            if ((commandId & CID_VALUE_MASK) >= ADMIN_CID_GET_LOG_PAGE && (commandId & CID_VALUE_MASK)< ADMIN_CID_GET_LOG_PAGE + DevExt->SgListPages) {
+            if ((commandId & CID_VALUE_MASK) == ADMIN_CID_GET_LOG_PAGE) {
                 NvmeProcessGetLogPageCompletion(DevExt, status, commandId);
+            } else if ((commandId & CID_VALUE_MASK) == ADMIN_CID_SAMSUNG_IDENTIFY || (commandId & CID_VALUE_MASK) == ADMIN_CID_SAMSUNG_GET_LOG_PAGE) {
+                NvmeProcessSamsungExtensionCompletion(DevExt, commandId, status, cqEntry);
             } else {
                 if (ADMIN_CID_SHUTDOWN_DELETE_SQ == commandId) {
                     if (status != NVME_SC_SUCCESS) {

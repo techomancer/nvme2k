@@ -245,6 +245,71 @@ BOOLEAN NvmeIdentifyNamespace(IN PHW_DEVICE_EXTENSION DevExt)
 }
 
 //
+// NvmeIdentifyEx - Send Identify command with custom parameters
+//
+BOOLEAN NvmeIdentifyEx(
+    IN PHW_DEVICE_EXTENSION DevExt,
+    IN ULONG NamespaceId,
+    IN ULONG CNS,
+    IN USHORT CommandId,
+    IN PSCSI_REQUEST_BLOCK Srb)
+{
+    NVME_COMMAND cmd;
+    PVOID prpPageVirt;
+    UCHAR prpPageIndex;
+    PNVME_SRB_EXTENSION srbExt;
+
+    // Store PRP page index in SRB extension so we can free it on completion
+    if (!Srb->SrbExtension) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: NvmeIdentifyEx - SRB has no extension\n");
+#endif
+        return FALSE;
+    }
+    srbExt = (PNVME_SRB_EXTENSION)Srb->SrbExtension;
+
+    // Allocate a PRP page for the identify data buffer (4KB)
+    prpPageIndex = AllocatePrpListPage(DevExt);
+    if (prpPageIndex == 0xFF) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: NvmeIdentifyEx - Failed to allocate PRP page\n");
+#endif
+        return FALSE;
+    }
+    srbExt->PrpListPage = prpPageIndex;
+
+    // Zero out the page to prevent stale data issues
+    prpPageVirt = GetPrpListPageVirtual(DevExt, prpPageIndex);
+    memset(prpPageVirt, 0, NVME_PAGE_SIZE);
+
+    memset(&cmd, 0, sizeof(NVME_COMMAND));
+
+    // Build Identify command
+    cmd.CDW0.Fields.Opcode = NVME_ADMIN_IDENTIFY;
+    cmd.CDW0.Fields.Flags = 0;
+    cmd.CDW0.Fields.CommandId = CommandId;
+    cmd.NSID = NamespaceId;
+    cmd.PRP1 = GetPrpListPagePhysical(DevExt, prpPageIndex).QuadPart;
+    cmd.PRP2 = 0;  // Single page transfer, no PRP2 needed
+    cmd.CDW10 = CNS;
+
+#ifdef NVME2K_DBG_CMD
+    ScsiDebugPrint(0, "nvme2k: NvmeIdentifyEx - CDW0=%08X (OPC=%02X CID=%04X) NSID=%08X PRP1=%08X%08X CDW10=%08X\n",
+                   cmd.CDW0.AsUlong, cmd.CDW0.Fields.Opcode, cmd.CDW0.Fields.CommandId,
+                   cmd.NSID, (ULONG)(cmd.PRP1 >> 32), (ULONG)(cmd.PRP1 & 0xFFFFFFFF),
+                   cmd.CDW10);
+#endif
+
+    DevExt->NonTaggedInFlight = Srb;
+    if (!NvmeSubmitAdminCommand(DevExt, &cmd)) {
+        DevExt->NonTaggedInFlight = NULL;
+        return FALSE;
+    } else {
+        return TRUE;
+    }
+}
+
+//
 // NvmeGetLogPage - Retrieve a log page from NVMe device asynchronously
 // Uses PRP page allocator for DMA buffer, untagged operation
 // ScsiPort guarantees only one untagged request at a time
@@ -252,11 +317,19 @@ BOOLEAN NvmeIdentifyNamespace(IN PHW_DEVICE_EXTENSION DevExt)
 BOOLEAN NvmeGetLogPage(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb, IN UCHAR LogPageId)
 {
     NVME_COMMAND cmd;
-    PHYSICAL_ADDRESS physAddr;
     PVOID prpPageVirt;
     UCHAR prpPageIndex;
     ULONG numdl;
     PNVME_SRB_EXTENSION srbExt;
+
+    // Store PRP page index in SRB extension so we can free it on completion
+    if (!Srb->SrbExtension) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: NvmeGetLogPage - SRB has no extension\n");
+#endif
+        return FALSE;
+    }
+    srbExt = (PNVME_SRB_EXTENSION)Srb->SrbExtension;
 
     // Allocate a PRP page for the log data buffer (4KB)
     prpPageIndex = AllocatePrpListPage(DevExt);
@@ -266,38 +339,22 @@ BOOLEAN NvmeGetLogPage(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Sr
 #endif
         return FALSE;
     }
+    srbExt->PrpListPage = prpPageIndex;
 
     // Zero out the page to prevent stale data issues
     prpPageVirt = GetPrpListPageVirtual(DevExt, prpPageIndex);
     memset(prpPageVirt, 0, NVME_PAGE_SIZE);
 
-    // Get physical address of the PRP buffer
-    physAddr = DevExt->PrpListPagesPhys;
-    physAddr.QuadPart += (prpPageIndex << NVME_PAGE_SHIFT);
-
-    // Store PRP page index in SRB extension so we can free it on completion
-    if (!Srb->SrbExtension) {
-#ifdef NVME2K_DBG
-        ScsiDebugPrint(0, "nvme2k: NvmeGetLogPage - SRB has no extension\n");
-#endif
-        FreePrpListPage(DevExt, prpPageIndex);
-        return FALSE;
-    }
-
-    srbExt = (PNVME_SRB_EXTENSION)Srb->SrbExtension;
-    srbExt->PrpListPage = prpPageIndex;
-
-    // Calculate NUMDL (number of dwords - 1) for 512 bytes (SMART log size)
-    numdl = (512 / 4) - 1;
-
     memset(&cmd, 0, sizeof(NVME_COMMAND));
 
     cmd.CDW0.Fields.Opcode = NVME_ADMIN_GET_LOG_PAGE;
-    cmd.CDW0.Fields.CommandId = (ADMIN_CID_GET_LOG_PAGE + prpPageIndex) | CID_NON_TAGGED_FLAG;
+    cmd.CDW0.Fields.CommandId = ADMIN_CID_GET_LOG_PAGE | CID_NON_TAGGED_FLAG;
     cmd.NSID = 0xFFFFFFFF;  // Global log page (not namespace-specific)
-    cmd.PRP1 = (ULONGLONG)physAddr.LowPart | ((ULONGLONG)physAddr.HighPart << 32);
+    cmd.PRP1 = GetPrpListPagePhysical(DevExt, prpPageIndex).QuadPart;
     cmd.PRP2 = 0;  // Single page transfer
 
+    // Calculate NUMDL (number of dwords - 1) for 512 bytes (SMART log size)
+    numdl = (512 / 4) - 1;
     // Bits 31:16 = NUMDL (Number of Dwords Lower)
     // Bits 15:08 = Reserved
     // Bits 07:00 = LID (Log Page Identifier)
@@ -305,11 +362,86 @@ BOOLEAN NvmeGetLogPage(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Sr
 
 #ifdef NVME2K_DBG
     ScsiDebugPrint(0, "nvme2k: NvmeGetLogPage - LID=0x%02X PRP=%u Phys=%08X%08X\n",
-                   LogPageId, prpPageIndex, physAddr.HighPart, physAddr.LowPart);
+                   LogPageId, prpPageIndex, (ULONG)(cmd.PRP1 >> 32), (ULONG)(cmd.PRP1));
 #endif
 
     // ScsiPort manages the untagged SRB, we can retrieve it in completion with ScsiPortGetSrb()
     
+    DevExt->NonTaggedInFlight = Srb;
+    if (!NvmeSubmitAdminCommand(DevExt, &cmd)) {
+        DevExt->NonTaggedInFlight = NULL;
+        return FALSE;
+    } else {
+        return TRUE;
+    }
+}
+
+//
+// NvmeGetLogPageEx - Retrieve a log page with custom parameters
+//
+BOOLEAN NvmeGetLogPageEx(
+    IN PHW_DEVICE_EXTENSION DevExt,
+    IN PSCSI_REQUEST_BLOCK Srb,
+    IN UCHAR LogPageId,
+    IN ULONG NamespaceId,
+    IN USHORT CommandId,
+    IN ULONG NumDwords)
+{
+    NVME_COMMAND cmd;
+    PVOID prpPageVirt;
+    UCHAR prpPageIndex;
+    ULONG numdl;
+    PNVME_SRB_EXTENSION srbExt;
+
+    // Store PRP page index in SRB extension so we can free it on completion
+    if (!Srb->SrbExtension) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: NvmeGetLogPageEx - SRB has no extension\n");
+#endif
+        return FALSE;
+    }
+    srbExt = (PNVME_SRB_EXTENSION)Srb->SrbExtension;
+
+    // Allocate a PRP page for the log data buffer (4KB)
+    prpPageIndex = AllocatePrpListPage(DevExt);
+    if (prpPageIndex == 0xFF) {
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: NvmeGetLogPageEx - Failed to allocate PRP page\n");
+#endif
+        return FALSE;
+    }
+    srbExt->PrpListPage = prpPageIndex;
+
+    // Zero out the page to prevent stale data issues
+    prpPageVirt = GetPrpListPageVirtual(DevExt, prpPageIndex);
+    memset(prpPageVirt, 0, NVME_PAGE_SIZE);
+
+    memset(&cmd, 0, sizeof(NVME_COMMAND));
+
+    cmd.CDW0.Fields.Opcode = NVME_ADMIN_GET_LOG_PAGE;
+    cmd.CDW0.Fields.CommandId = CommandId | CID_NON_TAGGED_FLAG;
+    cmd.NSID = NamespaceId;
+    cmd.PRP1 = GetPrpListPagePhysical(DevExt, prpPageIndex).QuadPart;
+    cmd.PRP2 = 0;  // Single page transfer
+
+    // NUMDL = number of dwords minus 1
+    // If NumDwords is 0, default to full page (1024 DWORDs = 4096 bytes)
+    if (NumDwords == 0) {
+        numdl = (NVME_PAGE_SIZE >> 2) - 1;  // 1023 (0x3FF) for 4KB
+    } else {
+        numdl = NumDwords - 1;
+    }
+
+    // Bits 31:16 = NUMDL (Number of Dwords Lower)
+    // Bits 15:08 = Reserved
+    // Bits 07:00 = LID (Log Page Identifier)
+    cmd.CDW10 = (LogPageId & 0xFF) | ((numdl & 0xFFFF) << 16);
+
+#ifdef NVME2K_DBG
+    ScsiDebugPrint(0, "nvme2k: NvmeGetLogPageEx - LID=0x%02X NSID=%08X CID=%04X NUMDL=%u PRP=%u Phys=%08X%08X\n",
+                   LogPageId, NamespaceId, CommandId, numdl, prpPageIndex, (ULONG)(cmd.PRP1 >> 32), (ULONG)(cmd.PRP1));
+#endif
+
     DevExt->NonTaggedInFlight = Srb;
     if (!NvmeSubmitAdminCommand(DevExt, &cmd)) {
         DevExt->NonTaggedInFlight = NULL;

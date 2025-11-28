@@ -14,7 +14,7 @@
 #include "nvme.h"
 #include "scsiext.h"
 
-#define NVME2K_DBG
+//#define NVME2K_DBG
 // extra spammy logging for NVMe commands
 //#define NVME2K_DBG_CMD
 //#define NVME2K_DBG_EXTRA
@@ -126,7 +126,12 @@ typedef struct _NVME_SRB_EXTENSION {
 // Admin Command IDs for post-init operations (must be > ADMIN_CID_INIT_COMPLETE)
 //
 #define ADMIN_CID_GET_LOG_PAGE          6   // Get Log Page (untagged, only one at a time)
-// SgListPages IDs reserved for page index
+
+//
+// Admin Command IDs for Samsung extension (NvmeMini) operations
+//
+#define ADMIN_CID_SAMSUNG_IDENTIFY      0x0100  // Samsung extension IDENTIFY
+#define ADMIN_CID_SAMSUNG_GET_LOG_PAGE  0x0110  // Samsung extension GET_LOG_PAGE
 
 //
 // Admin Command IDs for shutdown sequence (special, non-colliding values)
@@ -288,6 +293,8 @@ USHORT NvmeBuildFlushCommandId(IN PSCSI_REQUEST_BLOCK Srb);
 PSCSI_REQUEST_BLOCK NvmeGetSrbFromCommandId(IN PHW_DEVICE_EXTENSION DevExt, IN USHORT CommandId);
 BOOLEAN NvmeIdentifyController(IN PHW_DEVICE_EXTENSION DevExt);
 BOOLEAN NvmeIdentifyNamespace(IN PHW_DEVICE_EXTENSION DevExt);
+BOOLEAN NvmeIdentifyEx(IN PHW_DEVICE_EXTENSION DevExt, IN ULONG NamespaceId, IN ULONG CNS, IN USHORT CommandId, IN PSCSI_REQUEST_BLOCK Srb);
+BOOLEAN NvmeGetLogPageEx(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb, IN UCHAR LogPageId, IN ULONG NamespaceId, IN USHORT CommandId, IN ULONG NumDwords);
 VOID NvmeToAtaIdentify(IN PHW_DEVICE_EXTENSION DevExt, OUT PATA_IDENTIFY_DEVICE_STRUCT AtaIdentify);
 BOOLEAN NvmeLogPageToScsiLogPage(IN PNVME_SMART_INFO NvmeSmart, IN UCHAR ScsiPageCode, OUT PVOID ScsiLogBuffer, IN ULONG BufferSize, OUT PULONG BytesWritten);
 
@@ -306,6 +313,8 @@ BOOLEAN ScsiPending(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Sr, I
 //
 BOOLEAN HandleIO_NVME2KDB(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb);
 BOOLEAN HandleIO_SCSIDISK(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb);
+BOOLEAN HandleIO_NvmeMini(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb);
+BOOLEAN HandleSecurityProtocolOut(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb);
 
 // SMART IOCTL handler functions
 BOOLEAN HandleSmartGetVersion(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb, IN PSRB_IO_CONTROL srbControl);
@@ -321,6 +330,11 @@ BOOLEAN ScsiHandleLogSense(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOC
 BOOLEAN ScsiHandleSatPassthrough(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb);
 BOOLEAN ScsiHandleModeSense(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb);
 BOOLEAN ScsiHandleReadDefectData10(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb);
+
+//
+// Completion handlers
+//
+VOID NvmeProcessSamsungExtensionCompletion(IN PHW_DEVICE_EXTENSION DevExt, IN USHORT commandId, IN USHORT status, IN PNVME_COMPLETION cqEntry);
 
 //
 // PRP list page allocator

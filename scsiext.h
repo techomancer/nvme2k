@@ -12,7 +12,7 @@
 #define SCSIOP_ATA_PASSTHROUGH16        0x85
 #define SCSIOP_ATA_PASSTHROUGH12        0xA1
 #define SCSIOP_UNMAP                    0x42  // UNMAP command
-
+#define SCSIOP_SECURITY_PROTOCOL_OUT    0xB5
 //
 // SCSI UNMAP Constants
 //
@@ -467,5 +467,21 @@ typedef struct _SAT_PASSTHROUGH_12 {
 #define ATA_SMART_ATTR_HIGH_FLY_WRITES          189
 #define ATA_SMART_ATTR_TOTAL_LBA_WRITTEN        241
 #define ATA_SMART_ATTR_TOTAL_LBA_READ           242
+
+// this follows SRB_IO_CONTROL
+typedef struct _NVME_PASS_THROUGH
+{
+    ULONG          VendorSpecific[6];
+    ULONG          Command[16];
+    ULONG          Completion[4];
+    ULONG          Direction; // 0 no transfer, 1 h->d, 2 d->h, 3 bi
+    ULONG          QueueId; // 0 admin, otherwise IO
+    ULONG          DataBufferLen; // metadata + data
+    ULONG          MetaDataLen;
+    ULONG          ReturnBufferLen;
+//    UCHAR          DataBuffer[1]; // metadata + data
+} NVME_PASS_THROUGH, *PNVME_PASS_THROUGH;
+
+
 
 #endif // _SCSIEXT_H_

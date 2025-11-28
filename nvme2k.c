@@ -639,6 +639,10 @@ BOOLEAN HwStartIo(IN PVOID DeviceExtension, IN PSCSI_REQUEST_BLOCK Srb)
                 case SCSIOP_READ_DEFECT_DATA10:
                     return ScsiHandleReadDefectData10(DevExt, Srb);
 
+                case SCSIOP_SECURITY_PROTOCOL_OUT:
+                    // Samsung NVMe extension via Security Protocol Out (CDB[1] == 0xFE)
+                    return HandleSecurityProtocolOut(DevExt, Srb);
+
                 default:
 #ifdef NVME2K_DBG
                     ScsiDebugPrint(0, "nvme2k: HwStartIo - unimplemented SCSI opcode 0x%02X\n", Srb->Cdb[0]);
@@ -691,27 +695,44 @@ BOOLEAN HwStartIo(IN PVOID DeviceExtension, IN PSCSI_REQUEST_BLOCK Srb)
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: HwStartIo - SRB_FUNCTION_IO_CONTROL\n");
 #endif
-            // Handle NVME2KDB custom IOCTLs first
-            if (HandleIO_NVME2KDB(DevExt, Srb)) {
-                if (Srb->SrbStatus != SRB_STATUS_PENDING) {
-                    Srb->SrbStatus = SRB_STATUS_SUCCESS;
-                }
-            }
-            // Handle SMART and other miniport IOCTLs
-            else if (HandleIO_SCSIDISK(DevExt, Srb)) {
-                // If HandleIO_SCSIDISK returns TRUE, it may have set the status
-                // to PENDING for async operations.
-                if (Srb->SrbStatus != SRB_STATUS_PENDING) {
-                    Srb->SrbStatus = SRB_STATUS_SUCCESS;
+            if (Srb->DataTransferLength >= sizeof(SRB_IO_CONTROL)) {
+                PSRB_IO_CONTROL srbControl = (PSRB_IO_CONTROL)Srb->DataBuffer;
+                if (memcmp(srbControl->Signature, "NVME2KDB", 8) == 0) {
+                    if (HandleIO_NVME2KDB(DevExt, Srb)) {
+                        if (Srb->SrbStatus != SRB_STATUS_PENDING) {
+                            Srb->SrbStatus = SRB_STATUS_SUCCESS;
+                        }
+                    } else {
+                        Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;        
+                    }
+                } else if (memcmp(srbControl->Signature, "NvmeMini", 8) == 0) {
+                    if (HandleIO_NvmeMini(DevExt, Srb)) {
+                        if (Srb->SrbStatus != SRB_STATUS_PENDING) {
+                            Srb->SrbStatus = SRB_STATUS_SUCCESS;
+                        }
+                    } else {
+                        Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;        
+                    }
+                } else if (memcmp(srbControl->Signature, "SCSIDISK", 8) == 0) {
+                    if (HandleIO_SCSIDISK(DevExt, Srb)) {
+                        // If HandleIO_SCSIDISK returns TRUE, it may have set the status
+                        // to PENDING for async operations.
+                        if (Srb->SrbStatus != SRB_STATUS_PENDING) {
+                            Srb->SrbStatus = SRB_STATUS_SUCCESS;
+                        }
+                    } else {
+                        Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;        
+                    }
+                } else {
+                    Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;    
                 }
             } else {
 #ifdef NVME2K_DBG
-                if (Srb->DataTransferLength >= sizeof(SRB_IO_CONTROL)) {
-                    PSRB_IO_CONTROL srbControl = (PSRB_IO_CONTROL)Srb->DataBuffer;
-                    ScsiDebugPrint(0, "nvme2k: Unhandled IO_CONTROL, Sig: %.8s\n", srbControl->Signature);
-                }
+                ScsiDebugPrint(0, "nvme2k: HwStartIo - SRB_FUNCTION_IO_CONTROL invalid transfer length - DataTransferLength=%u\n",
+                            Srb->DataTransferLength);
 #endif
                 Srb->SrbStatus = SRB_STATUS_INVALID_REQUEST;
+                return FALSE;
             }
             break;
 
