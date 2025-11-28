@@ -348,7 +348,7 @@ BOOLEAN NvmeGetLogPage(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Sr
     memset(&cmd, 0, sizeof(NVME_COMMAND));
 
     cmd.CDW0.Fields.Opcode = NVME_ADMIN_GET_LOG_PAGE;
-    cmd.CDW0.Fields.CommandId = ADMIN_CID_GET_LOG_PAGE | CID_NON_TAGGED_FLAG;
+    cmd.CDW0.Fields.CommandId = ADMIN_CID_GET_LOG_PAGE;
     cmd.NSID = 0xFFFFFFFF;  // Global log page (not namespace-specific)
     cmd.PRP1 = GetPrpListPagePhysical(DevExt, prpPageIndex).QuadPart;
     cmd.PRP2 = 0;  // Single page transfer
@@ -419,7 +419,7 @@ BOOLEAN NvmeGetLogPageEx(
     memset(&cmd, 0, sizeof(NVME_COMMAND));
 
     cmd.CDW0.Fields.Opcode = NVME_ADMIN_GET_LOG_PAGE;
-    cmd.CDW0.Fields.CommandId = CommandId | CID_NON_TAGGED_FLAG;
+    cmd.CDW0.Fields.CommandId = CommandId;
     cmd.NSID = NamespaceId;
     cmd.PRP1 = GetPrpListPagePhysical(DevExt, prpPageIndex).QuadPart;
     cmd.PRP2 = 0;  // Single page transfer

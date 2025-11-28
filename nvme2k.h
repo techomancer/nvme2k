@@ -125,13 +125,13 @@ typedef struct _NVME_SRB_EXTENSION {
 //
 // Admin Command IDs for post-init operations (must be > ADMIN_CID_INIT_COMPLETE)
 //
-#define ADMIN_CID_GET_LOG_PAGE          6   // Get Log Page (untagged, only one at a time)
+#define ADMIN_CID_GET_LOG_PAGE          (6|CID_NON_TAGGED_FLAG)   // Get Log Page (untagged, only one at a time)
 
 //
 // Admin Command IDs for Samsung extension (NvmeMini) operations
 //
-#define ADMIN_CID_SAMSUNG_IDENTIFY      0x0100  // Samsung extension IDENTIFY
-#define ADMIN_CID_SAMSUNG_GET_LOG_PAGE  0x0110  // Samsung extension GET_LOG_PAGE
+#define ADMIN_CID_USER_IDENTIFY         (7|CID_NON_TAGGED_FLAG)  // DENTIFY from userspace via NvmeMini or SCSIOP_SECURITY_PROTOCOL_OUT/0xFE hack
+#define ADMIN_CID_USER_GET_LOG_PAGE     (8|CID_NON_TAGGED_FLAG)  // GET_LOG_PAGE same
 
 //
 // Admin Command IDs for shutdown sequence (special, non-colliding values)
@@ -334,7 +334,7 @@ BOOLEAN ScsiHandleReadDefectData10(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQU
 //
 // Completion handlers
 //
-VOID NvmeProcessSamsungExtensionCompletion(IN PHW_DEVICE_EXTENSION DevExt, IN USHORT commandId, IN USHORT status, IN PNVME_COMPLETION cqEntry);
+VOID NvmeProcessUserExtensionCompletion(IN PHW_DEVICE_EXTENSION DevExt, IN USHORT commandId, IN USHORT status, IN PNVME_COMPLETION cqEntry);
 
 //
 // PRP list page allocator

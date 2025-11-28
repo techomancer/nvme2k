@@ -139,9 +139,9 @@ VOID NvmeProcessGetLogPageCompletion(IN PHW_DEVICE_EXTENSION DevExt, IN USHORT s
 }
 
 //
-// NvmeProcessSamsungExtensionCompletion - Handle Samsung NVMe extension completion
+// NvmeProcessUserExtensionCompletion - Handle userspace called NVMe extension completion
 //
-VOID NvmeProcessSamsungExtensionCompletion(
+VOID NvmeProcessUserExtensionCompletion(
     IN PHW_DEVICE_EXTENSION DevExt,
     IN USHORT commandId,
     IN USHORT status,
@@ -434,10 +434,10 @@ BOOLEAN NvmeProcessAdminCompletion(IN PHW_DEVICE_EXTENSION DevExt)
         } else {
             // Post-initialization admin commands
             // Check if this is a Get Log Page command
-            if ((commandId & CID_VALUE_MASK) == ADMIN_CID_GET_LOG_PAGE) {
+            if (commandId == ADMIN_CID_GET_LOG_PAGE) {
                 NvmeProcessGetLogPageCompletion(DevExt, status, commandId);
-            } else if ((commandId & CID_VALUE_MASK) == ADMIN_CID_SAMSUNG_IDENTIFY || (commandId & CID_VALUE_MASK) == ADMIN_CID_SAMSUNG_GET_LOG_PAGE) {
-                NvmeProcessSamsungExtensionCompletion(DevExt, commandId, status, cqEntry);
+            } else if (commandId == ADMIN_CID_USER_IDENTIFY || commandId == ADMIN_CID_USER_GET_LOG_PAGE) {
+                NvmeProcessUserExtensionCompletion(DevExt, commandId, status, cqEntry);
             } else {
                 if (ADMIN_CID_SHUTDOWN_DELETE_SQ == commandId) {
                     if (status != NVME_SC_SUCCESS) {

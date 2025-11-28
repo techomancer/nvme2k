@@ -1338,7 +1338,7 @@ BOOLEAN HandleSecurityProtocolOut(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUE
         case NVME_ADMIN_IDENTIFY:
             // IDENTIFY command
             // parameter = CNS (Controller/Namespace Structure)
-            commandId = ADMIN_CID_SAMSUNG_IDENTIFY | CID_NON_TAGGED_FLAG;
+            commandId = ADMIN_CID_USER_IDENTIFY;
 
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: Samsung IDENTIFY (0xB5) - NSID=%u CNS=%02X CID=%04X\n",
@@ -1362,7 +1362,7 @@ BOOLEAN HandleSecurityProtocolOut(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUE
         case NVME_ADMIN_GET_LOG_PAGE:
             // GET_LOG_PAGE command
             // parameter = Log Page ID
-            commandId = ADMIN_CID_SAMSUNG_GET_LOG_PAGE | CID_NON_TAGGED_FLAG;
+            commandId = ADMIN_CID_USER_GET_LOG_PAGE;
 
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: Samsung GET_LOG_PAGE (0xB5) - NSID=%u LID=%02X CID=%04X\n",
@@ -1458,7 +1458,7 @@ BOOLEAN HandleIO_NvmeMini(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
             // CDW10 bits 0-7 = CNS (Controller or Namespace Structure)
             // IDENTIFY always returns 4KB of data
             parameter = (UCHAR)(nvmeCmd[10] & 0xFF);
-            commandId = ADMIN_CID_SAMSUNG_IDENTIFY | CID_NON_TAGGED_FLAG;
+            commandId = ADMIN_CID_USER_IDENTIFY;
 
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: NvmeMini IDENTIFY - NSID=%u CNS=%02X CDW10=%08X CID=%04X\n",
@@ -1488,7 +1488,7 @@ BOOLEAN HandleIO_NvmeMini(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
                 ULONG numdl = (nvmeCmd[10] >> 16) & 0xFFFF;
 
                 parameter = (UCHAR)(nvmeCmd[10] & 0xFF);
-                commandId = ADMIN_CID_SAMSUNG_GET_LOG_PAGE | CID_NON_TAGGED_FLAG;
+                commandId = ADMIN_CID_USER_GET_LOG_PAGE;
 
 #ifdef NVME2K_DBG
                 ScsiDebugPrint(0, "nvme2k: NvmeMini GET_LOG_PAGE - NSID=%u LID=%02X CDW10=%08X (NUMDL=%u) CID=%04X\n",
