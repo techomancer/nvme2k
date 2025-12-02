@@ -606,7 +606,7 @@ int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_B
         DevExt->RejectedRequests++;
         DevExt->NonTaggedInFlight = NULL;
         ScsiError(DevExt, Srb, SRB_STATUS_INVALID_REQUEST);
-        return -1;    
+        return -1;
     }
     // Validate transfer size against MDTS
     if (numBlocks * DevExt->NamespaceBlockSize > DevExt->MaxTransferSizeBytes) {
@@ -716,7 +716,7 @@ int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_B
                 DevExt->RejectedRequests++;
                 DevExt->NonTaggedInFlight = NULL;
                 ScsiError(DevExt, Srb, SRB_STATUS_INVALID_REQUEST);
-                return -1;    
+                return -1;
             }
 
             Cmd->PRP1 = physAddr.QuadPart;
@@ -748,7 +748,7 @@ int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_B
         DevExt->RejectedRequests++;
         DevExt->NonTaggedInFlight = NULL;
         ScsiError(DevExt, Srb, SRB_STATUS_INVALID_REQUEST);
-        return -1;    
+        return -1;
     }
 
 #ifdef NVME2K_DBG_CMD
@@ -782,7 +782,7 @@ int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_B
             DevExt->RejectedRequests++;
             DevExt->NonTaggedInFlight = NULL;
             ScsiError(DevExt, Srb, SRB_STATUS_INVALID_REQUEST);
-            return -1;    
+            return -1;
         }
 
 #ifdef NVME2K_DBG_CMD
@@ -821,12 +821,12 @@ int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_B
             currentPageVirtual = (PVOID)((PUCHAR)Srb->DataBuffer + currentOffset);
             length = remainingBytes;
             physAddr2 = ScsiPortGetPhysicalAddress(DevExt, Srb, currentPageVirtual, &length);
-            if (physAddr.QuadPart == 0) {
+            if (physAddr2.QuadPart == 0) {
                 FreePrpListPage(DevExt, prpListPage);
                 DevExt->RejectedRequests++;
                 DevExt->NonTaggedInFlight = NULL;
                 ScsiError(DevExt, Srb, SRB_STATUS_INVALID_REQUEST);
-                return -1;    
+                return -1;
             }
 
             prpList[prpIndex] = physAddr2.QuadPart;
