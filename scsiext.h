@@ -9,10 +9,23 @@
 //
 // SCSI Command Operation Codes
 //
+#ifndef SCSIOP_READ16
+#define SCSIOP_READ16                   0x88  // READ (16) command
+#endif
+#ifndef SCSIOP_WRITE16
+#define SCSIOP_WRITE16                  0x8A  // WRITE (16) command
+#endif
+#ifndef SCSIOP_READ_CAPACITY16
+#define SCSIOP_READ_CAPACITY16          0x9E  // SERVICE ACTION IN (16) - used for READ CAPACITY (16)
+#endif
 #define SCSIOP_ATA_PASSTHROUGH16        0x85
 #define SCSIOP_ATA_PASSTHROUGH12        0xA1
 #define SCSIOP_UNMAP                    0x42  // UNMAP command
-#define SCSIOP_SECURITY_PROTOCOL_OUT    0xB5
+
+//
+// Service Action codes for SCSIOP_READ_CAPACITY16
+//
+#define SERVICE_ACTION_READ_CAPACITY16  0x10
 //
 // SCSI UNMAP Constants
 //

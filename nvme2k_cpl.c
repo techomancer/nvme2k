@@ -155,7 +155,7 @@ VOID NvmeProcessUserExtensionCompletion(
     ULONG dataOffset;
 
 #ifdef NVME2K_DBG
-    ScsiDebugPrint(0, "nvme2k: Samsung extension completion - CID=%04X Status=0x%04X DW0=%08X DW1=%08X\n",
+    ScsiDebugPrint(0, "nvme2k: User extension completion - CID=%04X Status=0x%04X DW0=%08X DW1=%08X\n",
                    commandId, status, cqEntry->DW0, cqEntry->DW1);
 #endif
 
@@ -250,7 +250,7 @@ VOID NvmeProcessUserExtensionCompletion(
             srbControl->ReturnCode = 1;  // Error
         }
 #ifdef NVME2K_DBG
-        ScsiDebugPrint(0, "nvme2k: Samsung extension command failed with NVMe status 0x%04X\n", status);
+        ScsiDebugPrint(0, "nvme2k: user extension command failed with NVMe status 0x%04X\n", status);
 #endif
     }
 

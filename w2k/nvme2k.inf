@@ -34,7 +34,6 @@ nvme2k.sys=1
 
 [NVMe_Inst]
 CopyFiles = NVMe_CopyFiles
-AddReg = NVMe_AddReg
 
 [NVMe_Inst.Services]
 AddService = nvme2k, %SPSVCINST_ASSOCSERVICE%, NVMe_Service_Inst, Miniport_EventLog_Inst
@@ -45,28 +44,15 @@ StartType      = %SERVICE_BOOT_START%
 ErrorControl   = %SERVICE_ERROR_NORMAL%
 ServiceBinary  = %12%\nvme2k.sys
 LoadOrderGroup = SCSI Miniport
-Tag            = 33
-AddReg         = pnpsafe_pci_addreg
+AddReg         = NVMe_AddReg
 
 [NVMe_CopyFiles]
 nvme2k.sys
 
 [NVMe_AddReg]
 HKR, "Parameters\PnpInterface", "5", %REG_DWORD%, 0x00000001
-HKR, "Parameters\Device", "DriverParameter", %REG_SZ%, "PlaceHolder=0"
-HKR, "Parameters\Device", "MaximumSGList", %REG_DWORD%, 0x00000200
+HKR, "Parameters\Device", "MaximumSGList", %REG_DWORD%, 0x000000FF
 HKR, "Parameters\Device", "NumberOfRequests", %REG_DWORD%, 0x00000020
-; Enable tagged command queuing
-HKR, "Parameters\Device", "MaxQueueDepth", %REG_DWORD%, 0x00000020
-; Windows 2000 requires this key to enable multiple outstanding requests
-HKLM, "System\CurrentControlSet\Services\Disk", "TimeOutValue", %REG_DWORD%, 0x0000003C
-; Attempt to pin interrupt to CPU 0 (may not be supported on Windows 2000)
-; This is more of a documentation of intent - use boot.ini /onecpu for testing
-;HKR, "Interrupt Management\Affinity Policy", "DevicePolicy", %REG_DWORD%, 0x04
-;HKR, "Interrupt Management\Affinity Policy", "AssignmentSetOverride", %REG_BINARY%, 01,00,00,00
-
-[pnpsafe_pci_addreg]
-HKR, "Parameters\PnpInterface", "5", %REG_DWORD%, 0x00000001
 
 [Miniport_EventLog_Inst]
 AddReg = Miniport_EventLog_AddReg
@@ -83,6 +69,8 @@ DiskName = "NVMe Storage Controller Installation Disk"
 
 ; Service install flags
 SPSVCINST_ASSOCSERVICE = 0x00000002
+; bit 0 is tag to front, will make nvme load first
+; change it to 3 instead of 2 if you experience booting from nvme issues
 
 ; Service Type
 SERVICE_KERNEL_DRIVER  = 1

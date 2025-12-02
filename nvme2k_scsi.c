@@ -325,13 +325,13 @@ BOOLEAN ScsiHandleReadCapacity(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_
     PULONG capacityData;
     ULONG lastLba;
     ULONG blockSize;
-    
+
     if (Srb->DataTransferLength < 8) {
         return ScsiError(DevExt, Srb, SRB_STATUS_DATA_OVERRUN);
     }
-    
+
     capacityData = (PULONG)Srb->DataBuffer;
-    
+
     // Check if namespace has been identified
     if (DevExt->NamespaceSizeInBlocks == 0) {
         // Return default values
@@ -346,19 +346,86 @@ BOOLEAN ScsiHandleReadCapacity(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_
         }
         blockSize = DevExt->NamespaceBlockSize;
     }
-    
+
     // Return in big-endian format
     capacityData[0] = ((lastLba & 0xFF) << 24) |
                       ((lastLba & 0xFF00) << 8) |
                       ((lastLba & 0xFF0000) >> 8) |
                       ((lastLba & 0xFF000000) >> 24);
-    
+
     capacityData[1] = ((blockSize & 0xFF) << 24) |
                       ((blockSize & 0xFF00) << 8) |
                       ((blockSize & 0xFF0000) >> 8) |
                       ((blockSize & 0xFF000000) >> 24);
-    
+
     Srb->DataTransferLength = 8;
+    return ScsiSuccess(DevExt, Srb);
+}
+
+//
+// ScsiHandleReadCapacity16 - Handle SCSI READ CAPACITY(16) command
+// Per SBC-3 section 5.12 - Returns 64-bit LBA and additional information
+//
+BOOLEAN ScsiHandleReadCapacity16(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb)
+{
+    PUCHAR capacityData;
+    ULONGLONG lastLba;
+    ULONG blockSize;
+    ULONG i;
+
+    // Check service action (byte 1 of CDB)
+    if ((Srb->Cdb[1] & 0x1F) != SERVICE_ACTION_READ_CAPACITY16) {
+        return ScsiError(DevExt, Srb, SRB_STATUS_INVALID_REQUEST);
+    }
+
+    if (Srb->DataTransferLength < 32) {
+        return ScsiError(DevExt, Srb, SRB_STATUS_DATA_OVERRUN);
+    }
+
+    capacityData = (PUCHAR)Srb->DataBuffer;
+
+    // Clear the buffer
+    for (i = 0; i < 32; i++) {
+        capacityData[i] = 0;
+    }
+
+    // Check if namespace has been identified
+    if (DevExt->NamespaceSizeInBlocks == 0) {
+        // Return default values
+        lastLba = 0xFFFFFFFFFFFFFFFFu;
+        blockSize = 512;
+    } else {
+        lastLba = DevExt->NamespaceSizeInBlocks - 1;
+        blockSize = DevExt->NamespaceBlockSize;
+    }
+
+    // Bytes 0-7: Returned Logical Block Address (64-bit big-endian)
+    capacityData[0] = (UCHAR)(lastLba >> 56);
+    capacityData[1] = (UCHAR)(lastLba >> 48);
+    capacityData[2] = (UCHAR)(lastLba >> 40);
+    capacityData[3] = (UCHAR)(lastLba >> 32);
+    capacityData[4] = (UCHAR)(lastLba >> 24);
+    capacityData[5] = (UCHAR)(lastLba >> 16);
+    capacityData[6] = (UCHAR)(lastLba >> 8);
+    capacityData[7] = (UCHAR)(lastLba);
+
+    // Bytes 8-11: Block Length in Bytes (32-bit big-endian)
+    capacityData[8] = (UCHAR)(blockSize >> 24);
+    capacityData[9] = (UCHAR)(blockSize >> 16);
+    capacityData[10] = (UCHAR)(blockSize >> 8);
+    capacityData[11] = (UCHAR)(blockSize);
+
+    // Bytes 12-13: Additional fields (set to 0 for now)
+    // Byte 12, bit 0: PROT_EN (protection type enabled) - 0
+    // Byte 13: P_TYPE and P_I_EXPONENT - 0
+
+    // Bytes 14-15: Logical blocks per physical block exponent and alignment
+    // Byte 14, bits 3-0: Logical blocks per physical block exponent - 0
+    // Bytes 14-15: Lowest aligned logical block address - 0
+
+    // Bytes 16-31: Reserved (already zeroed)
+
+    Srb->DataTransferLength = 32;
     return ScsiSuccess(DevExt, Srb);
 }
 
@@ -1258,136 +1325,6 @@ BOOLEAN HandleIO_NVME2KDB(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK
 #endif
             srbControl->ReturnCode = 1;  // Error
             // Don't set SRB status - let caller set SRB_STATUS_INVALID_REQUEST
-            return FALSE;
-    }
-}
-
-//
-// HandleSecurityProtocolOut - Process SCSIOP_SECURITY_PROTOCOL_OUT (0xB5)
-//
-// This handler processes the Samsung NVMe extension via direct SCSI command.
-// The CDB contains:
-//   CDB[0] = SCSIOP_SECURITY_PROTOCOL_OUT (0xB5)
-//   CDB[1] = 0xFE (Samsung extension protocol)
-//   CDB[3] = NVMe admin opcode (NVME_ADMIN_IDENTIFY or NVME_ADMIN_GET_LOG_PAGE)
-//   CDB[4] = Namespace ID
-//   CDB[5] = CNS value (for IDENTIFY) or Log Page ID (for GET_LOG_PAGE)
-//
-// Data buffer contains the 4KB NVMe response data
-//
-BOOLEAN HandleSecurityProtocolOut(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_BLOCK Srb)
-{
-    PUCHAR cdb;
-    UCHAR nvmeOpcode;
-    ULONG namespaceId;
-    UCHAR parameter;
-    USHORT commandId;
-
-#ifdef NVME2K_DBG
-    ScsiDebugPrint(0, "nvme2k: HandleSecurityProtocolOut called - DataTransferLength=%u\n",
-                   Srb->DataTransferLength);
-#endif
-
-    // Validate minimum buffer size for 4KB NVMe data
-    if (Srb->DataTransferLength < NVME_PAGE_SIZE) {
-#ifdef NVME2K_DBG
-        ScsiDebugPrint(0, "nvme2k: HandleSecurityProtocolOut buffer too small - DataTransferLength=%u\n",
-                       Srb->DataTransferLength);
-#endif
-        return FALSE;
-    }
-
-    cdb = Srb->Cdb;
-
-#ifdef NVME2K_DBG
-    ScsiDebugPrint(0, "nvme2k: SecurityProtocolOut CDB: %02X %02X %02X %02X %02X %02X...\n",
-                   cdb[0], cdb[1], cdb[2], cdb[3], cdb[4], cdb[5]);
-#endif
-
-    // Check for Samsung extension protocol (0xFE)
-    if (cdb[1] != 0xFE) {
-#ifdef NVME2K_DBG
-        ScsiDebugPrint(0, "nvme2k: HandleSecurityProtocolOut not Samsung extension (protocol=%02X)\n", cdb[1]);
-#endif
-        return FALSE;
-    }
-
-    // Check if this is a non-tagged request (QueueTag == SP_UNTAGGED or no queue action enabled)
-    if (!((Srb->SrbFlags & SRB_FLAGS_QUEUE_ACTION_ENABLE) && (Srb->QueueTag != SP_UNTAGGED))) {
-        // Non-tagged request - only one can be in flight at a time
-        if (DevExt->NonTaggedInFlight) {
-#ifdef NVME2K_DBG
-            ScsiDebugPrint(0, "nvme2k: SecurityProtocolOut rejected - another non-tagged request in flight tag:%02X\n", Srb->QueueTag);
-#endif
-            return ScsiBusy(DevExt, Srb);
-        }
-    }
-
-    // Extract parameters from CDB
-    nvmeOpcode = cdb[3];   // NVMe admin opcode
-    namespaceId = cdb[4];  // Namespace ID
-    parameter = cdb[5];    // CNS (for IDENTIFY) or Log Page ID (for GET_LOG_PAGE)
-
-#ifdef NVME2K_DBG
-    ScsiDebugPrint(0, "nvme2k: Samsung NVMe extension (0xB5) - Opcode=%02X NSID=%u Param=%02X\n",
-                   nvmeOpcode, namespaceId, parameter);
-#endif
-
-    // Process based on NVMe opcode
-    switch (nvmeOpcode) {
-        case NVME_ADMIN_IDENTIFY:
-            // IDENTIFY command
-            // parameter = CNS (Controller/Namespace Structure)
-            commandId = ADMIN_CID_USER_IDENTIFY;
-
-#ifdef NVME2K_DBG
-            ScsiDebugPrint(0, "nvme2k: Samsung IDENTIFY (0xB5) - NSID=%u CNS=%02X CID=%04X\n",
-                           namespaceId, parameter, commandId);
-#endif
-            // apparently siv sets all to 0
-            if (parameter == 0 && namespaceId == 0)
-                parameter = NVME_CNS_CONTROLLER;
-            if (!NvmeIdentifyEx(DevExt, namespaceId, parameter, commandId, Srb)) {
-#ifdef NVME2K_DBG
-                ScsiDebugPrint(0, "nvme2k: NvmeIdentifyEx failed\n");
-#endif
-                Srb->SrbStatus = SRB_STATUS_ERROR;
-                return FALSE;
-            }
-
-            // Mark as pending - will complete in interrupt handler
-            Srb->SrbStatus = SRB_STATUS_PENDING;
-            return TRUE;
-
-        case NVME_ADMIN_GET_LOG_PAGE:
-            // GET_LOG_PAGE command
-            // parameter = Log Page ID
-            commandId = ADMIN_CID_USER_GET_LOG_PAGE;
-
-#ifdef NVME2K_DBG
-            ScsiDebugPrint(0, "nvme2k: Samsung GET_LOG_PAGE (0xB5) - NSID=%u LID=%02X CID=%04X\n",
-                           namespaceId, parameter, commandId);
-#endif
-
-            // SMART/Health log (0x02) is 512 bytes (128 DWORDs), others may vary
-            // For now, default to 512 bytes for SMART, full page for others
-            if (!NvmeGetLogPageEx(DevExt, Srb, parameter, namespaceId, commandId,
-                                  (parameter == 0x02) ? 128 : 0)) {
-#ifdef NVME2K_DBG
-                ScsiDebugPrint(0, "nvme2k: NvmeGetLogPageEx failed\n");
-#endif
-                Srb->SrbStatus = SRB_STATUS_ERROR;
-                return FALSE;
-            }
-
-            // Mark as pending - will complete in interrupt handler
-            Srb->SrbStatus = SRB_STATUS_PENDING;
-            return TRUE;
-
-        default:
-#ifdef NVME2K_DBG
-            ScsiDebugPrint(0, "nvme2k: Samsung extension (0xB5) unsupported opcode: %02X\n", nvmeOpcode);
-#endif
             return FALSE;
     }
 }

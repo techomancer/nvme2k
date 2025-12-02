@@ -594,8 +594,10 @@ BOOLEAN HwStartIo(IN PVOID DeviceExtension, IN PSCSI_REQUEST_BLOCK Srb)
             switch (Srb->Cdb[0]) {
                 case SCSIOP_READ6:
                 case SCSIOP_READ:
+                case SCSIOP_READ16:
                 case SCSIOP_WRITE6:
                 case SCSIOP_WRITE:
+                case SCSIOP_WRITE16:
                     return ScsiHandleReadWrite(DevExt, Srb);
                     
                 case SCSIOP_TEST_UNIT_READY:
@@ -612,10 +614,13 @@ BOOLEAN HwStartIo(IN PVOID DeviceExtension, IN PSCSI_REQUEST_BLOCK Srb)
                     
                 case SCSIOP_INQUIRY:
                     return ScsiHandleInquiry(DevExt, Srb);
-                    
+
                 case SCSIOP_READ_CAPACITY:
                     return ScsiHandleReadCapacity(DevExt, Srb);
-                    
+
+                case SCSIOP_READ_CAPACITY16:
+                    return ScsiHandleReadCapacity16(DevExt, Srb);
+
                 case SCSIOP_LOG_SENSE:
                     return ScsiHandleLogSense(DevExt, Srb);
 
@@ -638,10 +643,6 @@ BOOLEAN HwStartIo(IN PVOID DeviceExtension, IN PSCSI_REQUEST_BLOCK Srb)
 
                 case SCSIOP_READ_DEFECT_DATA10:
                     return ScsiHandleReadDefectData10(DevExt, Srb);
-
-                case SCSIOP_SECURITY_PROTOCOL_OUT:
-                    // Samsung NVMe extension via Security Protocol Out (CDB[1] == 0xFE)
-                    return HandleSecurityProtocolOut(DevExt, Srb);
 
                 default:
 #ifdef NVME2K_DBG

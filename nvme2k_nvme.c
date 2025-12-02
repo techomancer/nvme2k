@@ -21,10 +21,8 @@ ULONGLONG NvmeReadReg64(IN PHW_DEVICE_EXTENSION DevExt, IN ULONG Offset)
     ULONGLONG value;
     PULONG ptr = (PULONG)((PUCHAR)DevExt->ControllerRegisters + Offset);
     
-    value = ScsiPortReadRegisterUlong(ptr);
-    value |= ((ULONGLONG)ScsiPortReadRegisterUlong(ptr + 1)) << 32;
-    
-    return value;
+    return (ULONGLONG)ScsiPortReadRegisterUlong(ptr)
+         | (((ULONGLONG)ScsiPortReadRegisterUlong(ptr + 1)) << 32);
 }
 
 VOID NvmeWriteReg64(IN PHW_DEVICE_EXTENSION DevExt, IN ULONG Offset, IN ULONGLONG Value)
@@ -576,6 +574,25 @@ int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_B
                         ((ULONG)cdb->CDB10.TransferBlocksLsb);
             isWrite = (cdb->CDB10.OperationCode == SCSIOP_WRITE);
             break;
+
+        case SCSIOP_READ16:
+        case SCSIOP_WRITE16:
+            // READ(16)/WRITE(16) - Bytes 2-9: LBA (64-bit big-endian)
+            lba = ((ULONGLONG)Srb->Cdb[2] << 56) |
+                  ((ULONGLONG)Srb->Cdb[3] << 48) |
+                  ((ULONGLONG)Srb->Cdb[4] << 40) |
+                  ((ULONGLONG)Srb->Cdb[5] << 32) |
+                  ((ULONGLONG)Srb->Cdb[6] << 24) |
+                  ((ULONGLONG)Srb->Cdb[7] << 16) |
+                  ((ULONGLONG)Srb->Cdb[8] << 8) |
+                  ((ULONGLONG)Srb->Cdb[9]);
+            // Bytes 10-13: Transfer Length (32-bit big-endian)
+            numBlocks = ((ULONG)Srb->Cdb[10] << 24) |
+                        ((ULONG)Srb->Cdb[11] << 16) |
+                        ((ULONG)Srb->Cdb[12] << 8) |
+                        ((ULONG)Srb->Cdb[13]);
+            isWrite = (Srb->Cdb[0] == SCSIOP_WRITE16);
+            break;
     }
 
     // validate against buffer size
@@ -695,6 +712,13 @@ int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_B
             // Get physical address for the range data (only need 16 bytes)
             length = 16;
             physAddr = ScsiPortGetPhysicalAddress(DevExt, Srb, Srb->DataBuffer, &length);
+            if (physAddr.QuadPart == 0) {
+                DevExt->RejectedRequests++;
+                DevExt->NonTaggedInFlight = NULL;
+                ScsiError(DevExt, Srb, SRB_STATUS_INVALID_REQUEST);
+                return -1;    
+            }
+
             Cmd->PRP1 = physAddr.QuadPart;
             Cmd->PRP2 = 0;
 
@@ -720,6 +744,12 @@ int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_B
     // Get physical address of data buffer
     length = Srb->DataTransferLength;
     physAddr = ScsiPortGetPhysicalAddress(DevExt, Srb, Srb->DataBuffer, &length);
+    if (physAddr.QuadPart == 0) {
+        DevExt->RejectedRequests++;
+        DevExt->NonTaggedInFlight = NULL;
+        ScsiError(DevExt, Srb, SRB_STATUS_INVALID_REQUEST);
+        return -1;    
+    }
 
 #ifdef NVME2K_DBG_CMD
     ScsiDebugPrint(0, "nvme2k: NvmeBuildReadWriteCommand - DataBuffer=%p TransferLen=%u PhysAddr=%08X%08X ReturnedLen=%u\n",
@@ -748,6 +778,12 @@ int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_B
         currentPageVirtual = (PVOID)((PUCHAR)Srb->DataBuffer + firstPageBytes);
         length = Srb->DataTransferLength - firstPageBytes;
         physAddr2 = ScsiPortGetPhysicalAddress(DevExt, Srb, currentPageVirtual, &length);
+        if (physAddr2.QuadPart == 0) {
+            DevExt->RejectedRequests++;
+            DevExt->NonTaggedInFlight = NULL;
+            ScsiError(DevExt, Srb, SRB_STATUS_INVALID_REQUEST);
+            return -1;    
+        }
 
 #ifdef NVME2K_DBG_CMD
         ScsiDebugPrint(0, "nvme2k: NvmeBuildReadWriteCommand - Two page transfer: PhysAddr2=%08X%08X\n",
@@ -761,6 +797,8 @@ int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_B
             // No PRP list pages available - this shouldn't happen if we sized correctly
             ScsiDebugPrint(0, "nvme2k: No PRP list pages available %d/%d!\n", DevExt->CurrentPrpListPagesUsed, DevExt->SgListPages);
             Cmd->PRP2 = 0;
+            DevExt->RejectedRequests++;
+            DevExt->NonTaggedInFlight = NULL;
             return 0;
         }
 
@@ -783,6 +821,13 @@ int NvmeBuildReadWriteCommand(IN PHW_DEVICE_EXTENSION DevExt, IN PSCSI_REQUEST_B
             currentPageVirtual = (PVOID)((PUCHAR)Srb->DataBuffer + currentOffset);
             length = remainingBytes;
             physAddr2 = ScsiPortGetPhysicalAddress(DevExt, Srb, currentPageVirtual, &length);
+            if (physAddr.QuadPart == 0) {
+                FreePrpListPage(DevExt, prpListPage);
+                DevExt->RejectedRequests++;
+                DevExt->NonTaggedInFlight = NULL;
+                ScsiError(DevExt, Srb, SRB_STATUS_INVALID_REQUEST);
+                return -1;    
+            }
 
             prpList[prpIndex] = physAddr2.QuadPart;
             prpIndex++;
