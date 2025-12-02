@@ -1,0 +1,103 @@
+#
+# TXTSETUP.OEM - NVMe Driver for Windows 2000
+#
+# This file is used during text-mode setup to install the NVMe driver
+# for boot from NVMe devices.
+#
+# Copyright (c) 2025. All rights reserved.
+#
+
+[Disks]
+
+# This section lists all disks in the disk set.
+#
+# <description> is a descriptive name for a disk, used when
+#   prompting for the disk
+# <tagfile> is a file whose presence allows setup to recognize
+#   that the disk is inserted.
+# <directory> is where the files are located on the disk.
+#
+
+d1 = "NVMe Driver for Windows 2000", \disk1, \
+
+
+[Defaults]
+
+# This section lists the default selection for each 'required'
+# hardware component.  If a line is not present for a component,
+# the default defaults to the first item in the [<component_name>]
+# section (see below).
+#
+# <component_name> is one of computer, display, keyboard, mouse, scsi
+# <id> is a unique <within the component> string to be associated
+#   with an option.
+
+scsi = NVME2K
+
+
+[scsi]
+
+# This section lists the options available for a particular component.
+#
+# <id> is the unique string for the option
+# <description> is a text string, presented to the user in a menu
+# <key_name> gives the name of the key to be created for the component in
+#   HKEY_LOCAL_MACHINE\ControlSet001\Services
+
+NVME2K = "NVMe Storage Controller Driver for Windows 2000", nvme2k
+
+
+[HardwareIds.scsi.NVME2K]
+
+# This section lists the hardware IDs of devices that this driver supports.
+# Format: id = "PCI\VEN_xxxx&DEV_xxxx" or "PCI\CC_ccsspp"
+# Where cc=class, ss=subclass, pp=programming interface
+#
+# NVMe devices use PCI class code 01/08/02:
+#   Class 01 = Mass Storage Controller
+#   Subclass 08 = Non-Volatile Memory controller (NVM)
+#   Programming Interface 02 = NVMe
+
+id = "PCI\CC_010802", "nvme2k"
+
+
+[Files.scsi.NVME2K]
+
+# This section lists the files that should be copied if the user
+# selects a particular component option.
+#
+# <file_type> is one of driver, port, class, dll, hal, inf, or detect.
+#   See below.
+# <source_disk> identifies where the file is to be copied from, and must
+#   match an entry in the [Disks] section.
+# <filename> is the name of the file. This will be appended to the
+#   directory specified for the disk in the [Disks] section to form the
+#   full path of the file on the disk.
+#
+# NOTE: Windows 2000 does not support DLL references in TXTSETUP.OEM
+
+driver = d1, nvme2k.sys, nvme2k
+inf    = d1, nvme2k.inf
+
+
+[Config.scsi.NVME2K]
+
+# This section specifies values to be set in the registry for
+# particular component options.  Required values in the services\xxx
+# key are created automatically -- use this section to specify additional
+# keys to be created in services\xxx and values in services\xxx and
+# services\xxx\yyy.
+#
+# <key_name> is relative to the services node for this device.
+#   If it is empty, then it refers to the services node.
+#   If specified, the key is created first.
+# <value_name> specifies the value to be set within the key
+# <value_type> is a string like REG_DWORD.  See below.
+# <value> specifies the actual value; its format depends on <value_type>
+
+value = "", Tag, REG_DWORD, 33
+value = "", Type, REG_DWORD, 1
+value = "", Start, REG_DWORD, 0
+value = "", Group, REG_SZ, "SCSI Miniport"
+value = "", ErrorControl, REG_DWORD, 1
+value = Parameters\PnpInterface, 5, REG_DWORD, 1

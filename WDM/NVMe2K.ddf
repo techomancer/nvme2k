@@ -1,0 +1,18 @@
+.OPTION EXPLICIT                  ; Generate errors on variable typos
+
+.set CabinetNameTemplate=..\..\..\NVMe2K.cab
+.set DiskDirectoryTemplate=
+.set CompressionType=MSZIP
+.set RptFileName=NUL		; don't generate RPT file
+.set InfFileName=NUL		; don't generate INF file
+.set Cabinet=on
+.set Compress=on
+.set DestinationDir=NVMe2K
+.set SourceDir=.
+
+NVMe2K\NVMe2K.inf
+NVMe2K\NVMe2K.cat
+NVMe2K\NVMe2Kx32.sys
+NVMe2K\NVMe2Kx32.pdb
+NVMe2K\NVMe2Kx64.sys
+NVMe2K\NVMe2Kx64.pdb

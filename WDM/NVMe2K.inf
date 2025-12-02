@@ -1,0 +1,158 @@
+; NVMe2K.inf
+; Windows 2000 Installation File for NVMe Storage Controller Driver
+; Copyright (c) 2025 Dominik Behr + Ray Hinchliffe
+
+[Version]
+Signature="$Windows NT$"
+Class=SCSIAdapter
+ClassGUID={4D36E97B-E325-11CE-BFC1-08002BE10318}
+Provider=%ProviderString%
+DriverVer=12/02/2025,2.1.0.0
+CatalogFile = NVMe2K.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 12  ; DIRID_DRIVERS
+
+[SourceDisksNames]
+1 = %DiskName%,,
+
+[Manufacturer]
+;%VendorString%=NVMe_Models, NTamd64
+%VendorString%=NVMe_Models, NTamd64, NTia64
+
+[NVMe_Models]
+%NVMe.DeviceDesc% = NVMe_Inst,     PCI\CC_010802
+
+[NVMe_Models.NTamd64]
+%NVMe.DeviceDesc% = NVMe_Inst.x64, PCI\CC_010802
+
+[NVMe_Models.NTia64]
+%NVMe.DeviceDesc% = NVMe_Inst.i64, PCI\CC_010802
+
+;-------------------------------------------------------------------------------
+;                    Install NVMe2K x32 Service
+;-------------------------------------------------------------------------------
+
+[SourceDisksFiles]
+NVMe2Kx32.sys=1
+
+[NVMe_Inst]
+CopyFiles = NVMe_CopyFilesx32
+
+[NVMe_CopyFilesx32]
+NVMe2Kx32.sys
+
+[NVMe_Inst.Services]
+AddService = NVMe2K, %SPSVCINST_ASSOCSERVICE%, NVMe_Service_Instx32, Miniport_EventLog_Inst
+
+[NVMe_Service_Instx32]
+DisplayName    = %NVMe2K_Service%
+ServiceType    = %SERVICE_KERNEL_DRIVER%
+StartType      = %SERVICE_BOOT_START%
+ErrorControl   = %SERVICE_ERROR_NORMAL%
+ServiceBinary  = %12%\NVMe2Kx32.sys
+LoadOrderGroup = SCSI Miniport
+AddReg         = NVMe_AddReg
+
+;-------------------------------------------------------------------------------
+;                    Install NVMe2K x64 Service
+;-------------------------------------------------------------------------------
+
+[SourceDisksFiles.amd64]
+NVMe2Kx64.sys=1
+
+[NVMe_Inst.x64]
+CopyFiles = NVMe_CopyFilesx64
+
+[NVMe_CopyFilesx64]
+NVMe2Kx64.sys
+
+[NVMe_Inst.x64.Services]
+AddService = NVMe2K, %SPSVCINST_ASSOCSERVICE%, NVMe_Service_Instx64, Miniport_EventLog_Inst
+
+[NVMe_Service_Instx64]
+DisplayName    = %NVMe2K_Service%
+ServiceType    = %SERVICE_KERNEL_DRIVER%
+StartType      = %SERVICE_BOOT_START%
+ErrorControl   = %SERVICE_ERROR_NORMAL%
+ServiceBinary  = %12%\NVMe2Kx64.sys
+LoadOrderGroup = SCSI Miniport
+AddReg         = NVMe_AddReg
+
+;-------------------------------------------------------------------------------
+;                    Install NVMe2K i64 Service (untested)
+;-------------------------------------------------------------------------------
+
+[SourceDisksFiles.ia64]
+NVMe2Ki64.sys=1
+
+[NVMe_Inst.i64]
+CopyFiles = NVMe_CopyFilesi64
+
+[NVMe_CopyFilesi64]
+NVMe2Ki64.sys
+
+[NVMe_Inst.i64.Services]
+AddService = NVMe2K, %SPSVCINST_ASSOCSERVICE%, NVMe_Service_Insti64, Miniport_EventLog_Inst
+
+[NVMe_Service_Insti64]
+DisplayName    = %NVMe2K_Service%
+ServiceType    = %SERVICE_KERNEL_DRIVER%
+StartType      = %SERVICE_BOOT_START%
+ErrorControl   = %SERVICE_ERROR_NORMAL%
+ServiceBinary  = %12%\NVMe2Ki64.sys
+LoadOrderGroup = SCSI Miniport
+AddReg         = NVMe_AddReg
+
+;-------------------------------------------------------------------------------
+;                    Install NVMe2K Common
+;-------------------------------------------------------------------------------
+
+[NVMe_AddReg]
+HKR, "Parameters\PnpInterface", "5",                %REG_DWORD%, 0x00000001
+HKR, "Parameters\Device",       "MaximumSGList",    %REG_DWORD%, 0x000000FF
+HKR, "Parameters\Device",       "NumberOfRequests", %REG_DWORD%, 0x00000020
+
+[Miniport_EventLog_Inst]
+AddReg = Miniport_EventLog_AddReg
+
+[Miniport_EventLog_AddReg]
+HKR,,EventMessageFile,%REG_EXPAND_SZ%,"%%SystemRoot%%\System32\IoLogMsg.dll"
+HKR,,TypesSupported,%REG_DWORD%,7
+
+[Strings]
+NVMe2K_Service  = "NVMe2K NVMe Storage Controller ScsiPort Driver"
+ProviderString  = "NVMe Storage Driver"
+VendorString    = "NVMe2K NVMe Controller"
+NVMe.DeviceDesc = "NVMe Storage Controller (Windows 2000)"
+DiskName        = "NVMe Storage Controller Installation Disk"
+
+; Service install flags
+SPSVCINST_ASSOCSERVICE = 0x00000002
+; bit 0 is tag to front, will make NVMe load first
+; change it to 3 instead of 2 if you experience booting from nvme issues
+
+; Service Type
+SERVICE_KERNEL_DRIVER  = 1
+
+; Service Start Type
+SERVICE_BOOT_START     = 0
+SERVICE_SYSTEM_START   = 1
+SERVICE_AUTO_START     = 2
+SERVICE_DEMAND_START   = 3
+SERVICE_DISABLED       = 4
+
+; Service Error Control
+SERVICE_ERROR_IGNORE   = 0
+SERVICE_ERROR_NORMAL   = 1
+SERVICE_ERROR_SEVERE   = 2
+SERVICE_ERROR_CRITICAL = 3
+
+; Registry types
+REG_SZ         = 0x00000000
+REG_MULTI_SZ   = 0x00010000
+REG_EXPAND_SZ  = 0x00020000
+REG_BINARY     = 0x00000001
+REG_DWORD      = 0x00010001
+REG_NONE       = 0x00020001
