@@ -130,7 +130,7 @@ DriverDisk\
 ### Installing
 
 1. Copy driver files to installation media
-2. Boot Windows 2000
+2. Boot Windows 2000, Windows XP-x32, Windows XP-x64, Windows 2003 or later.
 3. Use Device Manager or Add Hardware Wizard
 4. Point to the driver location when prompted
 5. Select "NVMe Storage Controller (Windows 2000)"
