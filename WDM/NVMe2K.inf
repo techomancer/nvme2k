@@ -81,7 +81,7 @@ LoadOrderGroup = SCSI Miniport
 AddReg         = NVMe_AddReg
 
 ;-------------------------------------------------------------------------------
-;                    Install NVMe2K i64 Service (untested)
+;                    Install NVMe2K i64 Service
 ;-------------------------------------------------------------------------------
 
 [SourceDisksFiles.ia64]
