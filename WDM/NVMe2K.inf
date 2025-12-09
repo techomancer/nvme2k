@@ -7,7 +7,7 @@ Signature="$Windows NT$"
 Class=SCSIAdapter
 ClassGUID={4D36E97B-E325-11CE-BFC1-08002BE10318}
 Provider=%ProviderString%
-DriverVer=12/02/2025,2.1.0.0
+DriverVer=12/09/2025,2.2.0.0
 CatalogFile = NVMe2K.cat
 PnpLockdown = 1
 
