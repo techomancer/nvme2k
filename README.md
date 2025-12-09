@@ -16,7 +16,7 @@ It seemed like a good idea at first.
   - Single I/O queue pair (scalable architecture)
   - Admin queue for device management
   - PRP (Physical Region Page) based data transfers
-  - Up to 2MB transfer sizes via PRP lists
+  - Up to 2MB transfer sizes via PRP lists (limited by MDTS)
 
 - **SCSI Translation Layer**
   - Translates SCSI commands to NVMe commands
@@ -78,7 +78,7 @@ cd C:\NTDDK\bin
 setenv.bat C:\NTDDK free          REM or 'checked' for debug build
 
 REM Navigate to driver directory
-cd <path-to-nvme2k>
+cd <path-to-nvme2k>\w2k
 
 REM Build
 build -cZ
@@ -94,13 +94,33 @@ cd C:\NTDDK\bin
 setenv.bat C:\NTDDK free    REM or 'checked' for debug build
 
 REM Navigate to driver directory
-cd <path-to-nvme2k>
+cd <path-to-nvme2k>\w2k
 
 REM Build
 build -cZ
 ```
 
 Output: `obj\alpha\nvme2k.sys`
+
+#### For Newer OSes, thanks to Ray Hinchliffe
+Install DDK 6001.18002 and/or 7600.16385.1
+Run NVMe2K.bat. It will build 32 and 64 bit versions and IA64 in WDM directory.
+With its own inf files.
+
+#### For NT4 (and possibly earlier)
+Install NT4 ddk and MVSC 4.x
+
+```cmd
+REM Set up build environment
+cd C:\DDK\bin
+setenv.bat C:\DDK free          REM or 'checked' for debug build
+
+REM Navigate to driver directory
+cd <path-to-nvme2k>\nt4
+
+REM Build
+build -cZ
+```
 
 ### Build Options
 
@@ -109,7 +129,7 @@ Edit `nvme2k.h` to configure:
 ```c
 #define NVME2K_DBG                    // Enable debug logging
 // #define NVME2K_DBG_CMD             // Extra verbose command logging
-
+// #define NVME2K_DBG_EXTRA           // Now that is just excessive
 ```
 
 ## Installation
@@ -143,7 +163,6 @@ The driver supports registry-based configuration via the INF file:
 
 - **MaximumSGList** (Default: 255) - Maximum scatter-gather list entries
 - **NumberOfRequests** (Default: 32) - Queue depth
-- **MaxQueueDepth** (Default: 32) - Tagged command queue depth
 
 ## Debugging
 
@@ -160,7 +179,7 @@ Debug messages are output via `ScsiDebugPrint()` and visible in checked builds.
 
 - Single I/O queue pair (no multi-queue support)
 - No MSI/MSI-X interrupt support (uses legacy INTx)
-- Maximum 10 concurrent large transfers (PRP list pool limitation)
+- Maximum 32 (with fallback to 16) concurrent large transfers (PRP list pool limitation)
 - No namespace management (assumes namespace 1)
 - No power management features
 - Tested primarily in virtualized environments and Windows 2000 RC2 on Alpha
@@ -171,14 +190,12 @@ Debug messages are output via `ScsiDebugPrint()` and visible in checked builds.
 
 1. **NonTaggedInFlight** - Ensures only one non-tagged request at a time
 
-All locks can be disabled via `#define` for performance testing.
-
 ### Memory Allocation
 
 - **Uncached Extension** - 64KB for queues and PRP lists (DMA-accessible)
 - **Admin Queue** - 4KB submission + 4KB completion (power-of-2 sized)
 - **I/O Queue** - 4KB submission + 4KB completion (power-of-2 sized)
-- **PRP List Pool** - 40KB (10 pages) for scatter-gather
+- **PRP List Pool** - 40KB (32/16 pages) for scatter-gather
 
 ### Command ID Encoding
 
@@ -217,6 +234,9 @@ Feel free to submit issues or pull requests. Areas of interest:
 
 ## Acknowledgments
 
+- Ray Hinchliffe for build contributions and extensive testing.
+- SweetLow for taking it even further into the realm of insanity aka win9x.
+- Folks from Win2kdev Discord, Vogons
 - NVMe specification authors
 - Windows 2000 DDK documentation
 - Alpha AXP architecture documentation
