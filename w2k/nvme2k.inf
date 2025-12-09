@@ -7,7 +7,7 @@ Signature="$Windows NT$"
 Class=SCSIAdapter
 ClassGUID={4D36E97B-E325-11CE-BFC1-08002BE10318}
 Provider=%ProviderString%
-DriverVer=11/21/2025,1.0.0.3
+DriverVer=12/09/2025,1.2.0.0
 CatalogFile = NVMe2K.cat
 PnpLockdown = 1
 
@@ -32,6 +32,10 @@ nvme2k.sys=1
 [NVMe_Models]
 %NVMe.DeviceDesc% = NVMe_Inst, PCI\CC_010802
 
+;-------------------------------------------------------------------------------
+;                    Install NVMe2K x32 Service
+;-------------------------------------------------------------------------------
+
 [NVMe_Inst]
 CopyFiles = NVMe_CopyFiles
 
@@ -48,6 +52,10 @@ AddReg         = NVMe_AddReg
 
 [NVMe_CopyFiles]
 nvme2k.sys
+
+;-------------------------------------------------------------------------------
+;                    Install NVMe2K Common
+;-------------------------------------------------------------------------------
 
 [NVMe_AddReg]
 HKR, "Parameters\PnpInterface", "5", %REG_DWORD%, 0x00000001
