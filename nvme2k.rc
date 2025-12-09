@@ -4,25 +4,26 @@
 //
 
 #include <winver.h>
+#include "NVMe2K_vsn.h"
 
 #define VER_FILETYPE                VFT_DRV
 #define VER_FILESUBTYPE             VFT2_DRV_SYSTEM
 #define VER_FILEDESCRIPTION_STR     "NVMe Storage Controller Driver"
-#define VER_INTERNALNAME_STR        "nvme2k.sys"
-#define VER_ORIGINALFILENAME_STR    "nvme2k.sys"
+#define VER_INTERNALNAME_STR        NVMe2K_DRIVER
+#define VER_ORIGINALFILENAME_STR    NVMe2K_DRIVER
 #define VER_LEGALCOPYRIGHT_YEARS    "2025"
 #define VER_LEGALCOPYRIGHT_STR      "Copyright (C) Dominik Behr " VER_LEGALCOPYRIGHT_YEARS
 
-#define VER_FILEVERSION             1,0,0,3
-#define VER_FILEVERSION_STR         "1.0.0.3"
+#define VER_FILEVERSION             NVMe2K_VER_NUM
+#define VER_FILEVERSION_STR         NVMe2K_VER_STR
 
-#define VER_PRODUCTVERSION          1,0,0,3
-#define VER_PRODUCTVERSION_STR      "1.0.0.3"
+#define VER_PRODUCTVERSION          NVMe2K_VER_NUM
+#define VER_PRODUCTVERSION_STR      NVMe2K_VER_STR
 
 #define VER_PRODUCTNAME_STR         "NVMe Storage Controller Driver for Windows 2000"
-#define VER_COMPANYNAME_STR         "0xDEADBEEF"
+#define VER_COMPANYNAME_STR         "https://github.com/techomancer/nvme2k"
 
-#ifdef RC_INVOKED
+#ifdef RC_INVOKED                               // RC_INVOKED
 
 VS_VERSION_INFO VERSIONINFO
 FILEVERSION     VER_FILEVERSION
@@ -35,7 +36,7 @@ FILESUBTYPE     VER_FILESUBTYPE
 BEGIN
     BLOCK "StringFileInfo"
     BEGIN
-        BLOCK "040904B0"   // US English, Unicode
+        BLOCK "000004B0"                        // Language Neutral
         BEGIN
             VALUE "CompanyName",      VER_COMPANYNAME_STR
             VALUE "FileDescription",  VER_FILEDESCRIPTION_STR
@@ -49,8 +50,8 @@ BEGIN
     END
     BLOCK "VarFileInfo"
     BEGIN
-        VALUE "Translation", 0x0409, 0x04B0  // US English, Unicode
+        VALUE "Translation", 0x0000, 0x04B0     // Language Neutral
     END
 END
 
-#endif // RC_INVOKED
+#endif                                          // RC_INVOKED
