@@ -103,7 +103,7 @@ build -cZ
 Output: `obj\alpha\nvme2k.sys`
 
 #### For Newer OSes, thanks to Ray Hinchliffe
-Install DDK 6001.18001 and optionally 7600.16385.1 if you wish to use prefast. Note 7600 can't build for Windows 2000.
+Install DDK 6001.18002 and/or 7600.16385.1
 Run NVMe2K.bat. It will build 32 and 64 bit versions and IA64 in WDM directory.
 With its own inf files.
 
