@@ -118,6 +118,10 @@ SOURCE=.\utils.h
 # PROP Default_Filter ""
 # Begin Source File
 
+SOURCE=.\WDM\ChkINF.bat
+# End Source File
+# Begin Source File
+
 SOURCE=.\NVMe2K.bat
 # End Source File
 # Begin Source File
@@ -130,12 +134,36 @@ SOURCE=.\WDM\NVMe2K.inf
 # End Source File
 # Begin Source File
 
+SOURCE=.\WDM\NVMe2K_vsn.h
+# End Source File
+# Begin Source File
+
 SOURCE=.\WDM\sources
+# End Source File
+# End Group
+# Begin Group "Build W2K"
+
+# PROP Default_Filter ""
+# Begin Source File
+
+SOURCE=.\w2k\nvme2k.inf
+# End Source File
+# Begin Source File
+
+SOURCE=.\w2k\NVMe2K_vsn.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\W2K\sources
 # End Source File
 # End Group
 # Begin Group "Build NT4"
 
 # PROP Default_Filter ""
+# Begin Source File
+
+SOURCE=.\nt4\NVMe2K_vsn.h
+# End Source File
 # Begin Source File
 
 SOURCE=.\nt4\SOURCES
