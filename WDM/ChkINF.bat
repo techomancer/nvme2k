@@ -5,6 +5,7 @@
 @set BASEREL=6001.18001
 @set ChkDIR=tools\ChkINF
 @set ChkINF=%ChkDIR%\ChkINF.bat
+@set __BUILDMACHINE__=\\%COMPUTERNAME%
 
 @                                set BASEDIR=C:\WINDDK\%BASEREL%
 @if not exist %BASEDIR%\%ChkINF% set BASEDIR=C:\WINDDK\%BASEREL%
