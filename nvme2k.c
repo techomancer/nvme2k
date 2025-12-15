@@ -903,4 +903,3 @@ BOOLEAN HwAdapterState(
     return TRUE;
 }
 #endif
- 
