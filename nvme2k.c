@@ -5,6 +5,88 @@
 #include "nvme2k.h"
 #include "utils.h"
 
+// Poll interval for RequestTimerCall (ScsiPort expects microseconds)
+#define NVME2K_POLL_USEC 10000
+
+// --------------------------------------------------------------------------
+// IRQ robustness for Win2000/XP (SCSIPORT): force legacy INTx by disabling MSI/MSI-X
+// Many modern NVMe controllers come up with MSI-X enabled; XP SCSIPORT does not
+// reliably support MSI/MSI-X, resulting in massive timeouts (SpTimeoutSynchronized...).
+// --------------------------------------------------------------------------
+static VOID NvmeForceLegacyIntx(IN PHW_DEVICE_EXTENSION DevExt)
+{
+    // PCI conventional header offsets
+    const UCHAR PCI_STATUS_OFFSET_LOCAL   = 0x06; // USHORT
+    const UCHAR PCI_CAP_PTR_OFFSET_LOCAL  = 0x34; // UCHAR
+    const USHORT PCI_STATUS_CAP_LIST      = 0x0010;
+
+    const UCHAR PCI_CAP_ID_MSI  = 0x05;
+    const UCHAR PCI_CAP_ID_MSIX = 0x11;
+
+    USHORT status;
+    UCHAR  capPtr;
+    UCHAR  capId;
+    UCHAR  next;
+    ULONG  guard;
+
+    status = ReadPciConfigWord(DevExt, PCI_STATUS_OFFSET_LOCAL);
+    if (!(status & PCI_STATUS_CAP_LIST)) {
+        return;
+    }
+
+    capPtr = ReadPciConfigByte(DevExt, PCI_CAP_PTR_OFFSET_LOCAL);
+    capPtr = (UCHAR)(capPtr & (UCHAR)~0x03); // DWORD alignment
+
+    guard = 0;
+    while (guard < 32 && capPtr >= 0x40 && capPtr < 0x100) {
+        capId  = ReadPciConfigByte(DevExt, capPtr);
+        next   = ReadPciConfigByte(DevExt, (UCHAR)(capPtr + 1));
+        next   = (UCHAR)(next & (UCHAR)~0x03);
+
+        if (capId == PCI_CAP_ID_MSI) {
+            // MSI Message Control is a WORD at cap+2; bit0 = MSI Enable
+            USHORT msiCtrl;
+            USHORT newCtrl;
+
+            msiCtrl = ReadPciConfigWord(DevExt, (UCHAR)(capPtr + 2));
+            if (msiCtrl & 0x0001) {
+                newCtrl = (USHORT)(msiCtrl & (USHORT)~0x0001);
+                WritePciConfigWord(DevExt, (UCHAR)(capPtr + 2), newCtrl);
+#ifdef NVME2K_DBG
+                ScsiDebugPrint(0, "nvme2k: NvmeForceLegacyIntx - MSI disabled (cap=%02X ctrl %04X->%04X)\n",
+                               capPtr, msiCtrl, newCtrl);
+#endif
+            }
+        } else if (capId == PCI_CAP_ID_MSIX) {
+            // MSI-X Message Control is a WORD at cap+2; bit15 = MSI-X Enable, bit14 = Function Mask
+            USHORT msixCtrl;
+            USHORT newCtrl;
+
+            msixCtrl = ReadPciConfigWord(DevExt, (UCHAR)(capPtr + 2));
+            newCtrl  = msixCtrl;
+
+            // Mask vectors and disable MSI-X
+            newCtrl = (USHORT)(newCtrl | 0x4000);           // Function Mask
+            newCtrl = (USHORT)(newCtrl & (USHORT)~0x8000);  // MSI-X Enable
+
+            if (newCtrl != msixCtrl) {
+                WritePciConfigWord(DevExt, (UCHAR)(capPtr + 2), newCtrl);
+#ifdef NVME2K_DBG
+                ScsiDebugPrint(0, "nvme2k: NvmeForceLegacyIntx - MSI-X disabled (cap=%02X ctrl %04X->%04X)\n",
+                               capPtr, msixCtrl, newCtrl);
+#endif
+            }
+        }
+
+        if (next == 0 || next == capPtr) {
+            break;
+        }
+
+        capPtr = next;
+        guard++;
+    }
+}
+
 //
 // DriverEntry - Main entry point
 //
@@ -98,19 +180,23 @@ ULONG HwFoundAdapter(
     DevExt->SubsystemVendorId = ReadPciConfigWord(DevExt, PCI_SUBSYSTEM_VENDOR_ID_OFFSET);
     DevExt->SubsystemId = ReadPciConfigWord(DevExt, PCI_SUBSYSTEM_ID_OFFSET);
 
-    // Enable PCI device (Bus Master, Memory Space) but DISABLE interrupts at PCI level
-    // We'll re-enable interrupts later after proper initialization
-    // This prevents interrupt storms from residual controller state
-    WritePciConfigWord(DevExt, PCI_COMMAND_OFFSET,
-                      PCI_ENABLE_BUS_MASTER | PCI_ENABLE_MEMORY_SPACE | PCI_INTERRUPT_DISABLE);
-
-#ifdef NVME2K_DBG
+    // Enable PCI device decoding and bus mastering.
+    // Do NOT leave PCI_INTERRUPT_DISABLE set here: on Win2000/XP ScsiPort setups frequently rely on legacy INTx.
+    // (MSI/MSI-X is not guaranteed/available with ScsiPort.)
     {
         USHORT cmdReg = ReadPciConfigWord(DevExt, PCI_COMMAND_OFFSET);
+        cmdReg |= (PCI_ENABLE_BUS_MASTER | PCI_ENABLE_MEMORY_SPACE);
+        cmdReg = (USHORT)(cmdReg & ~PCI_INTERRUPT_DISABLE); // ensure INTx not disabled
+        WritePciConfigWord(DevExt, PCI_COMMAND_OFFSET, cmdReg);
+#ifdef NVME2K_DBG
         ScsiDebugPrint(0, "nvme2k: HwFoundAdapter - PCI Command Register = %04X (IntDis=%d)\n",
                        cmdReg, !!(cmdReg & PCI_INTERRUPT_DISABLE));
-    }
 #endif
+    }
+
+
+    // Force legacy INTx on XP/2000 to avoid MSI/MSI-X related timeouts
+    NvmeForceLegacyIntx(DevExt);
 
     // Read interrupt configuration from PCI config space
     // This is probably redundant on Win2K and can be ifdefed out
@@ -125,6 +211,7 @@ ULONG HwFoundAdapter(
                        ConfigInfo->BusInterruptLevel, ConfigInfo->BusInterruptVector, ConfigInfo->InterruptMode);
 #endif
 
+#if (_WIN32_WINNT < 0x500)
         // CRITICAL FOR NT4: When manually setting SystemIoBusNumber/SlotNumber,
         // SCSI port doesn't automatically query interrupt configuration from HAL.
         // We MUST set valid interrupt parameters or we'll get STATUS_INVALID_PARAMETER.
@@ -140,11 +227,14 @@ ULONG HwFoundAdapter(
 #ifdef NVME2K_DBG
             ScsiDebugPrint(0, "nvme2k: HwFoundAdapter - WARNING: No valid PCI interrupt configured\n");
 #endif
-            // If no valid interrupt, still need to set something valid for NT4
+            // If no valid interrupt, still need to set something valid for NT4.
             // Use polling mode - but this might not work on NT4!
             ConfigInfo->BusInterruptLevel = 0;
             ConfigInfo->BusInterruptVector = 0;
         }
+#else
+        // Win2000/XP: leave interrupt routing to ScsiPort/HAL; do not override ConfigInfo here.
+#endif
     }
 
     // Set the number of access ranges we're using (1 for BAR0)
@@ -183,45 +273,51 @@ ULONG HwFoundAdapter(
         }
     }
 #endif
-    // Again, most of this BAR dance has been already done by Win2k PnP
-    // We can probably ifdef it out on Win2k
-    // Get BAR0 (Controller registers for NVMe)
+    // Determine BAR0 / controller register range.
+    // On Win2000/XP PnP paths, ScsiPort usually provides a translated AccessRange already.
+    // Only fall back to PCI BAR probing ("BAR sizing dance") if the AccessRange is not populated.
     accessRange = &((*(ConfigInfo->AccessRanges))[0]);
-    accessRange->RangeStart = ScsiPortConvertUlongToPhysicalAddress(0);
-    accessRange->RangeLength = 0;
 
-    bar0tmp = ReadPciConfigDword(DevExt, PCI_BASE_ADDRESS_0);
-    bar0.HighPart = 0;
-    bar0.LowPart = bar0tmp & 0xFFFFFFF0;
-    if ((bar0tmp & 0x6) == 0x6) {
-        bar0.HighPart = ReadPciConfigDword(DevExt, PCI_BASE_ADDRESS_1);
-        if (bar0.HighPart) {
-            ScsiDebugPrint(0, "nvme2k: BAR0 base=0x%08X%08X beyond 4GB, it may not end well on 32bit kernel\n",
-                        accessRange->RangeStart.HighPart,
-                        accessRange->RangeStart.LowPart);
+    if (accessRange->RangeLength != 0 && accessRange->RangeStart.QuadPart != 0) {
+        // PnP path: trust the provided resource assignment.
+        accessRange->RangeInMemory = TRUE; // NVMe register space is MMIO
+        DevExt->ControllerRegistersLength = accessRange->RangeLength;
+    } else {
+        // Non-PnP / textmode scan path: read BAR0 from PCI config and size it.
+        bar0tmp = ReadPciConfigDword(DevExt, PCI_BASE_ADDRESS_0);
+        bar0.HighPart = 0;
+        bar0.LowPart = bar0tmp & 0xFFFFFFF0;
+        if ((bar0tmp & 0x6) == 0x6) {
+            bar0.HighPart = ReadPciConfigDword(DevExt, PCI_BASE_ADDRESS_1);
+            if (bar0.HighPart) {
+                ScsiDebugPrint(0, "nvme2k: BAR0 base=0x%08X%08X beyond 4GB, it may not end well on 32bit kernel\n",
+                            bar0.HighPart,
+                            bar0.LowPart);
+            }
         }
+
+    #if (_WIN32_WINNT >= 0x500 && !defined(ALPHA))
+        accessRange->RangeStart = ScsiPortConvertUlongToPhysicalAddress(ScsiPortConvertPhysicalAddressToULongPtr(bar0));
+    #else
+        accessRange->RangeStart = ScsiPortConvertUlongToPhysicalAddress(bar0.LowPart);
+    #endif
+        if (bar0tmp & 0x1) {
+            return SP_RETURN_ERROR;
+        }
+        accessRange->RangeInMemory = TRUE;
+
+        // Size BAR0 only if we had to probe it ourselves.
+        WritePciConfigDword(DevExt, PCI_BASE_ADDRESS_0, 0xFFFFFFFF);
+
+        // Read back the modified value
+        barSize = ReadPciConfigDword(DevExt, PCI_BASE_ADDRESS_0);
+
+        // Restore original BAR value
+        WritePciConfigDword(DevExt, PCI_BASE_ADDRESS_0, bar0tmp);
+        accessRange->RangeLength = ~(barSize & 0xFFFFFFF0) + 1;
+
+        DevExt->ControllerRegistersLength = accessRange->RangeLength;
     }
-
-#if (_WIN32_WINNT >= 0x500 && !defined(ALPHA))
-    accessRange->RangeStart = ScsiPortConvertUlongToPhysicalAddress(ScsiPortConvertPhysicalAddressToULongPtr(bar0));
-#else
-    accessRange->RangeStart = ScsiPortConvertUlongToPhysicalAddress(bar0.LowPart);
-#endif
-    if (bar0tmp & 0x1) {
-        return SP_RETURN_ERROR;
-    }
-    accessRange->RangeInMemory = TRUE;
-    
-    WritePciConfigDword(DevExt, PCI_BASE_ADDRESS_0, 0xFFFFFFFF);
-
-    // Read back the modified value
-    barSize = ReadPciConfigDword(DevExt, PCI_BASE_ADDRESS_0);
-
-    // Restore original BAR value
-    WritePciConfigDword(DevExt, PCI_BASE_ADDRESS_0, bar0tmp);
-    accessRange->RangeLength = ~(barSize & 0xFFFFFFF0) + 1;
-
-    DevExt->ControllerRegistersLength = accessRange->RangeLength;
 
 #ifdef NVME2K_DBG
     ScsiDebugPrint(0, "nvme2k: HwFoundAdapter - BAR0 base=0x%08X size=0x%08X\n",
@@ -387,6 +483,9 @@ ULONG HwFindAdapter(
     ULONG bytesRead;
     BOOLEAN PNP = ConfigInfo->NumberOfAccessRanges != 0;
 
+    // Defaults: keep polling fallback enabled until we prove legacy INTx is reliable.
+    DevExt->FallbackTimerNeeded = 1;
+    DevExt->InterruptCount = 0;
     if (HwContext) {
         busNumber = ((PULONG)HwContext)[0];
         slotNumber = ((PULONG)HwContext)[1];
@@ -404,6 +503,56 @@ ULONG HwFindAdapter(
 #endif
     }
 
+    // PnP path (Win2000/XP): ScsiPort gives us the exact bus/slot to probe.
+    // Do NOT scan other slots here, or you may confuse enumeration and waste time in textmode.
+    if (!HwContext && PNP) {
+        bytesRead = ScsiPortGetBusData(
+            DeviceExtension,
+            PCIConfiguration,
+            busNumber,
+            slotNumber,
+            pciBuffer,
+            256);
+
+        if (bytesRead == 0) {
+            *Again = FALSE;
+            return SP_RETURN_NOT_FOUND;
+        }
+
+        DevExt->VendorId = *(USHORT*)&pciBuffer[PCI_VENDOR_ID_OFFSET];
+        DevExt->DeviceId = *(USHORT*)&pciBuffer[PCI_DEVICE_ID_OFFSET];
+
+        if (DevExt->VendorId == 0xFFFF || DevExt->VendorId == 0x0000) {
+            *Again = FALSE;
+            return SP_RETURN_NOT_FOUND;
+        }
+
+        DevExt->RevisionId = pciBuffer[PCI_REVISION_ID_OFFSET];
+        progIf = pciBuffer[PCI_CLASS_CODE_OFFSET];
+        subClass = pciBuffer[PCI_CLASS_CODE_OFFSET + 1];
+        baseClass = pciBuffer[PCI_CLASS_CODE_OFFSET + 2];
+
+#ifdef NVME2K_DBG
+        ScsiDebugPrint(0, "nvme2k: HwFindAdapter (PnP) - bus %d slot %d: VID=%04X DID=%04X Class=%02X%02X%02X\n",
+                       busNumber, slotNumber, DevExt->VendorId, DevExt->DeviceId,
+                       baseClass, subClass, progIf);
+#endif
+
+        if (!IsNvmeDevice(baseClass, subClass, progIf)) {
+            *Again = FALSE;
+            return SP_RETURN_NOT_FOUND;
+        }
+
+        DevExt->BusNumber = busNumber;
+        DevExt->SlotNumber = slotNumber;
+        *Again = FALSE;
+        
+        // Ensure ConfigInfo matches the adapter we found (needed for non-PnP/textmode/NT4 scan paths)
+        ConfigInfo->AdapterInterfaceType = PCIBus;
+        ConfigInfo->SystemIoBusNumber = busNumber;
+        ConfigInfo->SlotNumber = slotNumber;
+        return HwFoundAdapter(DevExt, ConfigInfo, pciBuffer);
+    }
 
 scanloop:
     // Read PCI configuration space for THIS slot only
@@ -447,6 +596,11 @@ scanloop:
         // Found an NVMe device at the slot SCSI port asked us to check!
         DevExt->BusNumber = busNumber;
         DevExt->SlotNumber = slotNumber;
+
+        // Ensure ConfigInfo matches the adapter we found (needed for non-PnP/textmode/NT4 scan paths)
+        ConfigInfo->AdapterInterfaceType = PCIBus;
+        ConfigInfo->SystemIoBusNumber = busNumber;
+        ConfigInfo->SlotNumber = slotNumber;
         // Store next slot/bus so we can resume scanning on next call
         if (HwContext) {
 #ifdef NVME2K_DBG
@@ -498,6 +652,19 @@ BOOLEAN HwInitialize(IN PVOID DeviceExtension)
     ScsiDebugPrint(0, "nvme2k: HwInitialize called\n");
 #endif
 
+    // Ensure legacy INTx is not disabled at PCI command level.
+    // Some ScsiPort environments (especially textmode) may not use MSI/MSI-X reliably.
+    {
+        USHORT cmdReg = ReadPciConfigWord(DevExt, PCI_COMMAND_OFFSET);
+        if (cmdReg & PCI_INTERRUPT_DISABLE) {
+            cmdReg = (USHORT)(cmdReg & ~PCI_INTERRUPT_DISABLE);
+            WritePciConfigWord(DevExt, PCI_COMMAND_OFFSET, cmdReg);
+#ifdef NVME2K_DBG
+            ScsiDebugPrint(0, "nvme2k: HwInitialize - cleared PCI_INTERRUPT_DISABLE (Cmd=%04X)\n", cmdReg);
+#endif
+        }
+    }
+
     // Step 3: Enable interrupts
     // This is done after initialization is complete but before HwInitialize returns,
     // so ScsiPort knows we're interrupt-capable
@@ -523,7 +690,14 @@ BOOLEAN HwStartIo(IN PVOID DeviceExtension, IN PSCSI_REQUEST_BLOCK Srb)
                    Srb->Function, Srb->PathId, Srb->TargetId, Srb->Lun);
 #endif
 
-#if 0
+    // If interrupts are flaky/missing (common on modern PCIe with XP textmode),
+    // arm a lightweight fallback timer that polls NVMe completions.
+    // HwInterrupt() will cancel the timer whenever real interrupts fire.
+    if (DevExt->InitComplete && DevExt->FallbackTimerNeeded) {
+        ScsiPortNotification(RequestTimerCall, DeviceExtension, FallbackTimer, NVME2K_POLL_USEC);
+    }
+
+#if 1
     // Poll completion queues as a backup in case interrupts are delayed
     // This helps performance on busy systems
     if (DevExt->InitComplete) {
@@ -764,6 +938,14 @@ VOID FallbackTimer(IN PVOID DeviceExtension)
 
     NvmeProcessAdminCompletion(DevExt);
     NvmeProcessIoCompletion(DevExt);
+
+    // Rearm polling while requests are still in flight and fallback is enabled.
+    // If real interrupts fire, HwInterrupt() cancels the timer.
+    if (DevExt->InitComplete && DevExt->FallbackTimerNeeded) {
+        if (DevExt->CurrentQueueDepth > 0 || DevExt->NonTaggedInFlight) {
+            ScsiPortNotification(RequestTimerCall, DeviceExtension, FallbackTimer, NVME2K_POLL_USEC);
+        }
+    }
 }
 
 //
@@ -774,16 +956,6 @@ BOOLEAN HwInterrupt(IN PVOID DeviceExtension)
     PHW_DEVICE_EXTENSION DevExt = (PHW_DEVICE_EXTENSION)DeviceExtension;
     BOOLEAN interruptHandled = FALSE;
 
-    DevExt->InterruptCount++;
-    if (DevExt->FallbackTimerNeeded) {
-        // cancel the fallback timer
-        ScsiPortNotification(RequestTimerCall, DeviceExtension, FallbackTimer, 0);
-        // interrupts worked a million times, and callback didnt fire we probably dont need a fallback
-        if (DevExt->InterruptCount >= 1000000 && DevExt->FallbackTimerNeeded == 1) {
-            DevExt->FallbackTimerNeeded = 0;
-        }
-    }   
-
     // Process Admin Queue completions first
     if (NvmeProcessAdminCompletion(DevExt)) {
         interruptHandled = TRUE;
@@ -792,6 +964,22 @@ BOOLEAN HwInterrupt(IN PVOID DeviceExtension)
     // Process I/O Queue completions
     if (NvmeProcessIoCompletion(DevExt)) {
         interruptHandled = TRUE;
+    }
+
+    // Only treat this as a "real" interrupt if we actually consumed NVMe completions.
+    // This avoids disabling the polling fallback on shared/spurious IRQs.
+    if (interruptHandled) {
+        DevExt->InterruptCount++;
+
+        if (DevExt->FallbackTimerNeeded) {
+            // cancel any pending fallback timer
+            ScsiPortNotification(RequestTimerCall, DeviceExtension, FallbackTimer, 0);
+
+            // interrupts worked a million times, and callback didn't fire -> probably don't need a fallback
+            if (DevExt->InterruptCount >= 1000000 && DevExt->FallbackTimerNeeded == 1) {
+                DevExt->FallbackTimerNeeded = 0;
+            }
+        }
     }
 
     return interruptHandled;
