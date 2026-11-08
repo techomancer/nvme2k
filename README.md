@@ -1,5 +1,8 @@
 # NVMe2K - NVMe Driver for Windows 2000
 
+## You will probably have better experience with new driver from Ages2001
+https://github.com/ages2001/NVMENT
+
 A NVMe (Non-Volatile Memory Express) storage controller driver for Windows 2000, targeting both x86 and Alpha AXP platforms.
 
 ## Overview
